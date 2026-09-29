@@ -113,7 +113,7 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
 @media (max-width:620px){.ops{grid-template-columns:1fr}.pgrid{grid-template-columns:repeat(2,minmax(0,1fr))}#scope{width:120px}.row .name{width:78px}}
 @media (prefers-reduced-motion:reduce){.row .name.hit{background:var(--bg);color:var(--fg);text-decoration:underline}}
 
-.step-group{min-width:0;max-width:100%}#div{flex-wrap:wrap}#div button{flex-shrink:0}#lengthDivide button.queued,#div button.queued{outline:1px dashed var(--fg);outline-offset:-3px}
+.step-group{min-width:0;max-width:100%}#div{flex-wrap:wrap}#div button{flex-shrink:0}.row button.queued,#lengthDivide button.queued,#div button.queued{outline:1px dashed var(--fg);outline-offset:-3px}
 button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 button.instant-toggle:active:not(.on){background:var(--bg);color:var(--fg)}
 button.instant-toggle.on:active{background:var(--fg);color:var(--bg)}
@@ -247,6 +247,8 @@ class FM8 extends AudioWorkletProcessor {
     this.att = 1 - Math.exp(-1 / (this.laN / 5)); this.rel = 1 - Math.exp(-1 / (sampleRate * 0.08));
     this.tdir = new Int8Array(8).fill(1); this.tk0 = new Float64Array(8); this.ti0 = new Float64Array(8);
     this.tlastI = new Int32Array(8); this.tlastK = new Float64Array(8); this.thas = new Uint8Array(8); this.revArm = new Uint8Array(8); this.tpp = new Uint8Array(8);
+    this.mixPending={}; this.mixSeq=0; this.lastMix=null;
+    this.undoPending=null; this.undoSeq=0; this.lastUndo=null;
     this.patternOrigin = 0;
     this.returnTicks = null;
     this.lengthPending = null; this.lengthSeq = 0; this.lastLengthDivisor = 1;
@@ -275,6 +277,8 @@ class FM8 extends AudioWorkletProcessor {
     if ((s.divisionSeq || 0) < this.divisionSeq) s.spb = this.lastDivision;
     if ((s.lengthSeq || 0) < this.lengthSeq) s.lengthDivisor = this.lastLengthDivisor;
     if (!s.autoReturn || (s.lengthDivisor || 1) === 1 || (this.st && s.lengthDivisor !== this.st.lengthDivisor)) this.returnTicks = null;
+    if((s.undoSeq||0)<this.undoSeq && this.lastUndo){s.tracks=JSON.parse(JSON.stringify(this.lastUndo.tracks));s.lengthDivisor=this.lastUndo.lengthDivisor;}
+    if((s.mixSeq||0)<this.mixSeq && this.lastMix)this.lastMix.forEach((v,t)=>Object.assign(s.tracks[t],v));
     this.st = s;
     this.setOS(this.osOverride || s.os || 2);
     this.setGains(s);
@@ -310,9 +314,11 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'recordCancel') this.recording = null;
     else if (d.type === 'state') this.setState(d.state);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.flipArm = false; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; }
+    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.flipArm = false; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
     else if (d.type === 'flipArm') this.flipArm = !!d.on;
     else if (d.type === 'revArm') this.revArm[d.t] = d.on ? 1 : 0;
+    else if (d.type === 'mixPending') { const key=d.t+':'+d.key; if(d.value===null)delete this.mixPending[key];else this.mixPending[key]={t:d.t,key:d.key,value:!!d.value,id:d.id}; }
+    else if (d.type === 'undoPending') this.undoPending=d.value;
     else if (d.type === 'lengthDivision') this.lengthPending = d.value;
     else if (d.type === 'division') this.divisionPending = d.value;
     else if (d.type === 'pending') this.pend = d.tracks || null;
@@ -546,6 +552,18 @@ class FM8 extends AudioWorkletProcessor {
   fireStep(k) {
     this.recordTick(k);
     const st = this.st;
+    if(this.undoPending){
+      const cycle=this.patternCycle();
+      if((((k-this.patternOrigin)%cycle)+cycle)%cycle===0){
+        const u=this.undoPending;this.undoPending=null;this.lastUndo=u;this.undoSeq++;
+        st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
+        this.pend=null;this.lengthPending=null;this.returnTicks=null;
+        this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
+        for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
+        this.alignDividedTracks(k);this.setGains(st);
+        if(!this.offline)this.port.postMessage({type:'undoApplied',seq:this.undoSeq,lengthSeq:this.lengthSeq,value:u});
+      }
+    }
     this.updateLengthCycle(k);
     if (this.divisionPending !== null) {
       const loop = Math.max(...st.tracks.map(tr => Math.max(1, Math.min(64, tr.len | 0))));
@@ -565,6 +583,13 @@ class FM8 extends AudioWorkletProcessor {
         this.lastPend = this.pend; this.pend = null; this.randSeq++;
         if (!this.offline) this.port.postMessage({ type: 'applied', seq: this.randSeq });
       }
+    }
+    const mixCycle=this.patternCycle();
+    if(Object.keys(this.mixPending).length && (((k-this.patternOrigin)%mixCycle)+mixCycle)%mixCycle===0){
+      const changes=Object.values(this.mixPending);this.mixPending={};
+      for(const c of changes)st.tracks[c.t][c.key]=c.value;
+      this.lastMix=st.tracks.map(t=>({mute:!!t.mute,solo:!!t.solo}));this.mixSeq++;
+      if(!this.offline)this.port.postMessage({type:'mixApplied',seq:this.mixSeq,changes});
     }
     let solo = false;
     for (const tr of st.tracks) if (tr.solo) { solo = true; break; }
@@ -862,6 +887,8 @@ async function ensureAudio() {
   try {
     ctx = new AudioContext({ latencyHint: 'interactive' });
     engineURL = await loadWorklet(ctx.audioWorklet);
+    state.mixSeq = 0; engineMixSeq=0;
+    state.undoSeq = 0;
     state.lengthSeq = 0; engineLengthSeq = 0;
     state.divisionSeq = 0; state.flipSeq = 0; state.randSeq = 0; engineFlips = 0; engineRand = 0;
     node = new AudioWorkletNode(ctx, 'fm8', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { state } });
@@ -869,6 +896,8 @@ async function ensureAudio() {
       const d = e.data;
       if (d.type.startsWith('record')) handleRecording(d);
       else if (d.type === 'step') stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate });
+      else if (d.type === 'mixApplied') { state.mixSeq=engineMixSeq=d.seq;for(const c of d.changes){state.tracks[c.t][c.key]=c.value;const key=c.t+':'+c.key;if(pendingMix[key]?.id===c.id)delete pendingMix[key];}paintMix();saveLocal(); }
+      else if (d.type === 'undoApplied') { landUndo(d); }
       else if (d.type === 'lengthApplied') { state.lengthDivisor=d.value; state.lengthSeq=engineLengthSeq=d.seq; pendingLengthDivision=null; renderSeq(); saveLocal(); }
       else if (d.type === 'divisionApplied') { state.spb = d.value; state.divisionSeq = d.seq; pendingDivision = null; paintDivision(); renderSeq(); saveLocal(); }
       else if (d.type === 'applied') { engineRand = d.seq; landPend(d.seq); }
@@ -911,7 +940,7 @@ async function togglePlay() {
   if (!playing) saveLocal();
   $('#play').textContent = playing ? 'Stop' : 'Play';
   $('#play').classList.toggle('on', playing);
-  if (!playing) { pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
+  if (!playing) { pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
 }
 
 /* ---------- UI primitives ---------- */
@@ -1096,6 +1125,22 @@ function instantToggle(button) {
   button.addEventListener('click',e=>{if(e.detail>0){e.preventDefault();e.stopImmediatePropagation();}},true);
 }
 
+let pendingMix={}, mixCommand=0, engineMixSeq=0;
+function paintMix(){
+  rowEls.forEach((r,t)=>[['mute',r.m],['solo',r.s]].forEach(([key,b])=>{
+    if(!b)return;const queued=pendingMix[t+':'+key];const on=queued?queued.value:!!state.tracks[t][key];
+    b.classList.toggle('on',on);b.classList.toggle('queued',!!queued);b.setAttribute('aria-pressed',on);
+  }));
+}
+function queueMix(t,key){
+  const id=t+':'+key, old=pendingMix[id], value=!(old?old.value:state.tracks[t][key]);
+  if(playing&&node){
+    const command=++mixCommand;
+    if(value===!!state.tracks[t][key])delete pendingMix[id];else pendingMix[id]={value,id:command};
+    node.port.postMessage({type:'mixPending',t,key,value:pendingMix[id]?value:null,id:command});
+    paintMix();
+  }else{state.tracks[t][key]=value;paintMix();sync();}
+}
 let rowEls = [];
 function renderSeq() {
   paintLengthDivision();
@@ -1106,9 +1151,9 @@ function renderSeq() {
     nm.title = 'Edit and hear ' + tr.name;
     nm.onclick = () => { select(ti); audition(ti, brush); };
     const m = el('button', 'sm' + (tr.mute ? ' on' : ''), 'M'); m.title = 'Mute'; m.setAttribute('aria-pressed', tr.mute);
-    m.onclick = () => { tr.mute = !tr.mute; m.classList.toggle('on', tr.mute); m.setAttribute('aria-pressed', tr.mute); sync(); };
+    m.onclick = () => queueMix(ti,'mute');
     const s = el('button', 'sm' + (tr.solo ? ' on' : ''), 'S'); s.title = 'Solo'; s.setAttribute('aria-pressed', tr.solo);
-    s.onclick = () => { tr.solo = !tr.solo; s.classList.toggle('on', tr.solo); s.setAttribute('aria-pressed', tr.solo); sync(); };
+    s.onclick = () => queueMix(ti,'solo');
     const c = el('button', 'sm', effCut(tr) ? 'Cut' : 'Poly'); c.style.width = '46px';
     if (state.voiceMode !== 'track') c.style.borderStyle = 'dotted';
     c.title = state.voiceMode === 'track' ? 'Cut: a new hit on this track cuts its previous one. Poly: hits overlap.' : 'Set by the global voice mode — click to switch to per-track control';
@@ -1130,11 +1175,12 @@ function renderSeq() {
     const steps = el('div', 'steps');
     row.append(nm, m, s, rv, pp, c, len, steps);
     rows.append(row);
-    rowEls[ti] = { row, nm, steps, cells: [], now: -1, c, rv };
+    rowEls[ti] = { row, nm, steps, cells: [], now: -1, c, rv, m, s };
     paintRev(ti);
     buildSteps(ti);
     bindPaint(ti, steps);
   });
+  paintMix();
 }
 const revArm = new Array(8).fill(false);
 // ping-pong glyph: forward arrow on top, backward arrow below, 1px strokes
@@ -1678,12 +1724,23 @@ $('#rndBoth').onclick = () => {
   else { if (!pend.sounds) pend.sounds = makeSounds(); if (!pend.beats) pend.beats = makeBeats(pend.sounds.map(p => p.role)); }
   sendPend();
 };
-$('#undo').disabled = true;
-$('#undo').onclick = () => {
-  const s = undoStack.pop(); if (!s) return;
-  resetTrail();
-  const o = normalize(JSON.parse(s)); state.tracks = o.tracks; state.lengthDivisor = o.lengthDivisor;
-  $('#undo').disabled = !undoStack.length; renderAll();
+let pendingUndo=null;
+function paintUndo(){const b=$('#undo');b.disabled=!undoStack.length&&!pendingUndo;b.classList.toggle('on',!!pendingUndo);b.setAttribute('aria-pressed',!!pendingUndo);}
+function landUndo(d){
+  if(pendingUndo)undoStack.splice(pendingUndo.index,1);
+  pendingUndo=null;resetTrail();state.tracks=d.value.tracks;state.lengthDivisor=d.value.lengthDivisor;
+  state.undoSeq=d.seq;state.lengthSeq=engineLengthSeq=d.lengthSeq;
+  pendingLengthDivision=null;revArm.fill(false);clearPend();paintUndo();renderAll();
+}
+paintUndo();
+$('#undo').title='While playing, undo at the next pattern boundary. Press again to cancel.';
+$('#undo').onclick=()=>{
+  if(pendingUndo){pendingUndo=null;if(node)node.port.postMessage({type:'undoPending',value:null});paintUndo();return;}
+  const index=undoStack.length-1;if(index<0)return;
+  const o=normalize(JSON.parse(undoStack[index]));
+  const value={tracks:o.tracks,lengthDivisor:o.lengthDivisor};
+  if(playing&&node){pendingUndo={index};node.port.postMessage({type:'undoPending',value});paintUndo();}
+  else {undoStack.pop();resetTrail();state.tracks=value.tracks;state.lengthDivisor=value.lengthDivisor;paintUndo();renderAll();}
 };
 function renderVMode() {
   seg($('#vmode'), [['cut', 'All cut'], ['poly', 'All poly'], ['track', 'Per track']], () => state.voiceMode, v => { state.voiceMode = v; renderSeq(); renderEditor(); sync(); });
@@ -1860,7 +1917,7 @@ $('#saveKit').onclick = async () => {
 $('#loadKit').onclick = () => $('#kitFile').click();
 $('#kitFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  try { const s = normalize(JSON.parse(await f.text())); pushUndo(); resetTrail(); state = s; state.lengthSeq=engineLengthSeq; pendingLengthDivision=null; if(node)node.port.postMessage({type:'lengthDivision',value:null}); state.flipSeq = engineFlips; state.randSeq = engineRand; clearPend(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = 'kit loaded'; }
+  try { const s = normalize(JSON.parse(await f.text())); pushUndo(); resetTrail(); pendingMix={};if(node)for(let t=0;t<8;t++)for(const key of ['mute','solo'])node.port.postMessage({type:'mixPending',t,key,value:null}); state = s; state.mixSeq=engineMixSeq; state.lengthSeq=engineLengthSeq; pendingLengthDivision=null; if(node)node.port.postMessage({type:'lengthDivision',value:null}); state.flipSeq = engineFlips; state.randSeq = engineRand; clearPend(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = 'kit loaded'; }
   catch (err) { $('#xstat').textContent = 'not a Strike Eight kit file'; }
   e.target.value = '';
 };
