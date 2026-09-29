@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8">
-<title>Strike Eight</title>
+<title>Percussion Synthesizer</title>
 <meta name="description" content="Eight-voice 4-operator FM percussion synthesizer with a 1–64 step sequencer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -112,12 +112,13 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
 @media (max-width:1100px){.ops{grid-template-columns:repeat(2,minmax(0,1fr))}.edgrid{grid-template-columns:1fr}}
 @media (max-width:620px){.ops{grid-template-columns:1fr}.pgrid{grid-template-columns:repeat(2,minmax(0,1fr))}#scope{width:120px}.row .name{width:78px}}
 @media (prefers-reduced-motion:reduce){.row .name.hit{background:var(--bg);color:var(--fg);text-decoration:underline}}
+
 </style>
 
 </head>
 <body>
 <header class="bar" id="top">
-  <div class="brand"><b>Strike Eight</b><span>8 × 4-op FM percussion</span></div>
+  <div class="brand"><b>Percussion Synthesizer</b></div>
   <div class="grp">
     <button id="play" class="u" style="min-width:64px">Play</button>
     <div id="bpm" class="p inline" style="width:200px" title="Tempo −999 to 999. Negative plays the pattern backwards; 0 holds."></div>
@@ -138,6 +139,7 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
   <div class="grp"><button id="rndBeats">Beats</button><div id="kDens" class="knob"></div></div>
   <div class="grp"><button id="rndBoth">Both</button><button id="undo">Undo</button></div>
   <div class="spacer"></div>
+  <div class="grp"><button id="evolve" aria-pressed="false">Evolution</button><div id="kEvolve" class="knob" title="Evolution amount"></div><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="keepEvolution" disabled>Keep</button></div>
   <div class="grp"><span class="cap">Voices</span><div class="seg" id="vmode"></div></div>
 </section>
 
@@ -168,7 +170,8 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
 const TAU = Math.PI * 2;
 const VEL = [0, 0.2, 0.45, 0.7, 1];
 const CR = 16;      // control-rate interval, in oversampled samples
-const MAXV = 12;    // voices per track
+const SOFT = 24;    // regular voices per track
+const MAXV = 32;    // + 8 reserve slots that let a stolen voice fade out instead of clicking
 
 function i0(x) {
   let s = 1, t = 1;
@@ -320,8 +323,21 @@ class FM8 extends AudioWorkletProcessor {
     const vs = this.vox[ti];
     if (mode === 'track' && tr.cut) for (const v of vs) this.fade(v, tr.fade);
     let v = null;
-    for (const x of vs) if (!x.on) { v = x; break; }
-    if (!v) { v = vs[0]; for (const x of vs) if (x.age < v.age) v = x; }
+    for (let q = 0; q < SOFT; q++) if (!vs[q].on) { v = vs[q]; break; }
+    if (!v) {
+      // every regular slot is busy: fade the oldest voice out over a few ms and give its slot to the new hit,
+      // moving the fading voice into a free reserve slot so it can finish without a click
+      let si = -1, ri = -1;
+      for (let q = 0; q < SOFT; q++) if (!vs[q].fading && (si < 0 || vs[q].age < vs[si].age)) si = q;
+      for (let q = SOFT; q < MAXV; q++) if (!vs[q].on) { ri = q; break; }
+      if (si >= 0 && ri >= 0) {
+        this.fade(vs[si], 3);
+        const tmp = vs[si]; vs[si] = vs[ri]; vs[ri] = tmp;
+        v = vs[si];
+      } else {
+        v = vs[0]; for (const x of vs) if (x.age < v.age) v = x;   // last resort: nothing free anywhere
+      }
+    }
     v.on = true; v.fading = false; v.g = 1; v.gd = 0; v.t = 0; v.cr = 0; v.tr = ti; v.vel = vel;
     v.age = this.ageCtr++;
     v.rp = Math.pow(2, (Math.random() * 2 - 1) * tr.rndPitch / 1200);
@@ -509,6 +525,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.offline && this.maxSteps && this.fired >= this.maxSteps) this.playing = false;
   }
   process(inputs, outputs) {
+    this.clock = currentFrame;   // audio-context frame of this block's first sample, so step times match the context clock
     const out = outputs[0];
     const L = out[0], R = out[1] || out[0];
     if (!this.st) { L.fill(0); if (R !== L) R.fill(0); return true; }
@@ -730,6 +747,7 @@ function pushUndo() { undoStack.push(JSON.stringify(state)); if (undoStack.lengt
 
 /* ---------- audio ---------- */
 let ctx = null, node = null, an = null, engineURL = null, playing = false, flipArmed = false;
+let engineFlips = 0, engineRand = 0;   // the audio engine's own tallies (it starts from 0 each page load)
 function paintFlip() {
   const f = $('#flip'); if (!f) return;
   f.classList.toggle('on', flipArmed); f.setAttribute('aria-pressed', flipArmed);
@@ -750,13 +768,14 @@ async function ensureAudio() {
   try {
     ctx = new AudioContext({ latencyHint: 'interactive' });
     engineURL = await loadWorklet(ctx.audioWorklet);
+    state.flipSeq = 0; state.randSeq = 0; engineFlips = 0; engineRand = 0;
     node = new AudioWorkletNode(ctx, 'fm8', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { state } });
     node.port.onmessage = e => {
       const d = e.data;
       if (d.type === 'step') stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate });
-      else if (d.type === 'applied') landPend(d.seq);
+      else if (d.type === 'applied') { engineRand = d.seq; landPend(d.seq); }
       else if (d.type === 'rev') { state.tracks[d.t].rev = d.rev; revArm[d.t] = false; paintRev(d.t); saveLocal(); }
-      else if (d.type === 'flipped') { state.flipSeq = d.flips; state.bpm = -state.bpm; flipArmed = false; paintFlip(); $('#bpm')._upd(); saveLocal(); }
+      else if (d.type === 'flipped') { engineFlips = d.flips; state.flipSeq = d.flips; state.bpm = -state.bpm; flipArmed = false; paintFlip(); $('#bpm')._upd(); saveLocal(); }
     };
     an = ctx.createAnalyser(); an.fftSize = 2048;
     node.connect(an); node.connect(ctx.destination);
@@ -790,6 +809,8 @@ async function togglePlay() {
   playing = !playing;
   node.port.postMessage({ type: 'state', state });
   node.port.postMessage({ type: playing ? 'play' : 'stop' });
+  paintEvolution();
+  if (!playing) saveLocal();
   $('#play').textContent = playing ? 'Stop' : 'Play';
   $('#play').classList.toggle('on', playing);
   if (!playing) { stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
@@ -1164,7 +1185,7 @@ function renderEditor() {
   const hear = el('div', 'grp'); hear.append(el('span', 'cap', 'Hear'));
   const hs = el('div', 'seg'); [1, 2, 3, 4].forEach(v => { const b = el('button', null, VNAMES[v]); b.onclick = () => audition(sel, v); hs.append(b); }); hear.append(hs);
   const acts = el('div', 'grp');
-  const bR = el('button', null, 'Randomize'); bR.onclick = () => { pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
+  const bR = el('button', null, 'Randomize'); bR.onclick = () => { resetTrail(); pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
   const bM = el('button', null, 'Mutate'); bM.title = 'Nudge every parameter slightly'; bM.onclick = () => { pushUndo(); mutate(tr, 0.06); renderEditor(); sync(); audition(sel, 4); };
   const bI = el('button', null, 'Init'); bI.onclick = () => { pushUndo(); const keep = { steps: tr.steps, len: tr.len, mute: tr.mute, solo: tr.solo, rev: tr.rev, pp: tr.pp, name: tr.name }; state.tracks[sel] = mkInst(Object.assign({ mx: mxOf({ '0,1': 1 }), ops: [{}, { d1: 60 }, { lvl: 0 }, { lvl: 0 }] }, keep)); renderAll(); };
   const bC = el('button', null, 'Copy'); bC.onclick = () => { clip = JSON.stringify(tr); bP.disabled = false; };
@@ -1346,9 +1367,132 @@ function genRhythm(tr, dens) {
   tr.steps = st;
 }
 
+/* ---------- continuous kit evolution ---------- */
+let evolving = false, evolutionAmount = 25, evolutionTime = null, evolutionPaint = 0;
+let devolving = false, evolutionTrail = [], trailTime = 0, trailSample = 0;
+function timbreFields() {
+  const fields = [];
+  state.tracks.forEach(tr => {
+    ['decS', 'idx', 'drive'].forEach(k => fields.push([tr, INST_BY[k]]));
+    tr.ops.forEach(op => ['a', 'h', 'd1', 'brk', 'd2', 'curve'].forEach(k => fields.push([op, OP_BY[k]])));
+    tr.mx.forEach(row => row.forEach((v, k) => fields.push([row, {k, min:0, max:12}])));
+  });
+  return fields;
+}
+function captureTimbre() { return timbreFields().map(([o, s]) => o[s.k]); }
+function recordTrail() {
+  if (devolving) while (evolutionTrail.length > 1 && evolutionTrail.at(-1).t > trailTime) evolutionTrail.pop();
+  const point = {t: trailTime, values: captureTimbre()};
+  if (evolutionTrail.length && evolutionTrail.at(-1).t === trailTime) evolutionTrail[evolutionTrail.length - 1] = point;
+  else evolutionTrail.push(point);
+  // Bound memory for long sessions, retaining the original and the whole route.
+  if (evolutionTrail.length > 6000) evolutionTrail = evolutionTrail.filter((_, i, a) => i % 2 === 0 || i === a.length - 1);
+}
+function resetTrail() {
+  stopEvolution(); evolutionTrail = []; trailTime = trailSample = 0; paintEvolution();
+}
+function reverseTimbre(dt) {
+  trailTime = Math.max(0, trailTime - dt * (0.25 + 3.75 * evolutionAmount / 100));
+  while (evolutionTrail.length > 2 && evolutionTrail[evolutionTrail.length - 2].t >= trailTime) evolutionTrail.pop();
+  const a = evolutionTrail[Math.max(0, evolutionTrail.length - 2)], b = evolutionTrail.at(-1);
+  const f = b.t > a.t ? clamp((trailTime - a.t) / (b.t - a.t), 0, 1) : 0;
+  timbreFields().forEach(([o, spec], i) => {
+    o[spec.k] = trailTime === 0 ? evolutionTrail[0].values[i] : toVal(spec, toNorm(spec, a.values[i]) * (1-f) + toNorm(spec, b.values[i]) * f);
+  });
+  if (trailTime === 0) { devolving = false; evolutionTrail = []; stopEvolution(); }
+}
+let evolutionTouch = false;
+const evolutionMotion = new Map();
+// Pause for manual sound edits, but keep evolving while the Amount dial is held.
+document.addEventListener('pointerdown', e => {
+  evolutionTouch = !e.target.closest('#kEvolve, #evolve, #devolve, #keepEvolution');
+});
+document.addEventListener('pointerup', () => evolutionTouch = false);
+document.addEventListener('pointercancel', () => evolutionTouch = false);
+window.addEventListener('blur', () => evolutionTouch = false);
+function paintEvolution() {
+  $('#evolve').classList.toggle('on', evolving);
+  $('#evolve').setAttribute('aria-pressed', evolving);
+  $('#devolve').classList.toggle('on', devolving);
+  $('#devolve').setAttribute('aria-pressed', devolving);
+  $('#devolve').disabled = !devolving && evolutionTrail.length < 2;
+  $('#keepEvolution').disabled = !(evolving || devolving);
+}
+function stopEvolution(kept = false) {
+  if (evolving || devolving) recordTrail();
+  evolving = devolving = false; evolutionTime = null; evolutionMotion.clear();
+  paintEvolution();
+  if (kept) {
+    // A queued sound randomization must not overwrite a kept kit.
+    pend.sounds = null; sendPend();
+  }
+  sync();
+}
+function evolveTick(now) {
+  const dt = evolutionTime === null ? 0 : Math.min(0.1, Math.max(0, (now - evolutionTime) / 1000));
+  evolutionTime = now;
+  if (!(evolving || devolving) || !playing || !ctx || ctx.state !== 'running' || evolutionTouch || document.activeElement?.tagName === 'INPUT') return;
+  if (devolving) reverseTimbre(dt);
+  else {
+  const w = evolutionAmount / 100;
+  // Normalized parameter movement per second: zero is intentionally not off.
+  const speed = 0.0007 + 0.075 * w * w;
+  const move = (obj, spec, id, weight = 1) => {
+    let m = evolutionMotion.get(id);
+    if (!m) { m = { v: 0, target: Math.random() * 2 - 1, remaining: 0 }; evolutionMotion.set(id, m); }
+    m.remaining -= dt;
+    if (m.remaining <= 0) { m.target = Math.random() * 2 - 1; m.remaining = 2 + Math.random() * 5; }
+    m.v += (m.target - m.v) * (1 - Math.exp(-dt * 1.5));
+    const n = toNorm(spec, obj[spec.k]);
+    if ((n < 0.001 && m.v < 0) || (n > 0.999 && m.v > 0)) { m.target = -m.target; m.v = -m.v; }
+    obj[spec.k] = toVal(spec, n + m.v * speed * weight * dt);
+  };
+  state.tracks.forEach((tr, ti) => {
+    // Timbre only: preserve tuning, ratios, fixed frequencies, detune and pitch envelopes.
+    ['decS', 'idx', 'drive'].forEach(k => move(tr, INST_BY[k], ti + ':' + k));
+    tr.ops.forEach((op, oi) => {
+      ['a', 'h', 'd1', 'brk', 'd2', 'curve'].forEach(k => move(op, OP_BY[k], ti + ':' + oi + ':' + k));
+    });
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      if (tr.mx[i][j] > 0) move(tr.mx[i], { k: j, min: 0.001, max: 12, sc: 'log' }, ti + ':mx:' + i + ':' + j);
+    }
+  });
+  trailTime += dt; trailSample += dt;
+  if (trailSample >= 0.1) { recordTrail(); trailSample = 0; paintEvolution(); }
+  }
+  // Use the existing live DSP path; no voice restart, no graph reconstruction.
+  if (node) node.port.postMessage({ type: 'state', state });
+  if (now - evolutionPaint > 150) {
+    document.querySelectorAll('.p, .mc').forEach(e => { if (e._upd) e._upd(); });
+    drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i);
+    evolutionPaint = now;
+  }
+}
+
 /* ---------- global actions ---------- */
 function renderAll() { renderSeq(); renderEditor(); sync(); }
 $('#play').onclick = togglePlay;
+$('#evolve').onclick = () => {
+  if (evolving) { stopEvolution(); return; }
+  pushUndo();
+  if (devolving) { recordTrail(); devolving = false; }
+  if (!evolutionTrail.length) { trailTime = 0; recordTrail(); }
+  evolving = true; evolutionTime = null; evolutionMotion.clear(); paintEvolution();
+};
+$('#devolve').onclick = () => {
+  if (devolving) { stopEvolution(); return; }
+  if (evolutionTrail.length < 2) return;
+  pushUndo(); recordTrail(); evolving = false; devolving = true;
+  evolutionTime = null; evolutionMotion.clear();
+  pend.sounds = null; sendPend(); paintEvolution();
+};
+$('#devolve').title = 'Retrace evolution to the starting kit while playing. Amount controls return speed.';
+$('#keepEvolution').onclick = () => stopEvolution(true);
+knob($('#kEvolve'), 'Amount', () => evolutionAmount, v => evolutionAmount = v,
+  v => v + '%');
+$('#kEvolve').setAttribute('aria-valuemin', '0');
+$('#kEvolve').setAttribute('aria-valuemax', '100');
+$('#export').title = 'Export a snapshot of the current kit. Keep stops evolution at a sound you like.';
 // While playing, randomizing is prepared now and lands on the first step of the next loop.
 const pend = { sounds: null, beats: null };
 const TRACK_KEEP = ['steps', 'len', 'mute', 'solo', 'rev', 'pp'];
@@ -1374,6 +1518,7 @@ function sendPend() {
   node.port.postMessage({ type: 'pending', tracks });
 }
 function landPend(seq) {
+  if (pend.sounds) resetTrail();
   pushUndo();
   state.tracks.forEach((tr, t) => {
     if (pend.sounds) Object.assign(tr, JSON.parse(JSON.stringify(pend.sounds[t])));
@@ -1384,7 +1529,7 @@ function landPend(seq) {
 }
 function clearPend() { pend.sounds = pend.beats = null; if (node) node.port.postMessage({ type: 'pending', tracks: null }); paintRnd(); }
 $('#rndSounds').onclick = () => {
-  if (!(playing && node)) { pushUndo(); state.tracks.forEach(t => randomizeInst(t, wild / 100)); renderAll(); return; }
+  if (!(playing && node)) { resetTrail(); pushUndo(); state.tracks.forEach(t => randomizeInst(t, wild / 100)); renderAll(); return; }
   pend.sounds = pend.sounds ? null : makeSounds(); sendPend();
 };
 $('#rndBeats').onclick = () => {
@@ -1392,7 +1537,7 @@ $('#rndBeats').onclick = () => {
   pend.beats = pend.beats ? null : makeBeats(pend.sounds && pend.sounds.map(p => p.role)); sendPend();
 };
 $('#rndBoth').onclick = () => {
-  if (!(playing && node)) { pushUndo(); state.tracks.forEach(t => { randomizeInst(t, wild / 100); genRhythm(t, density); }); renderAll(); return; }
+  if (!(playing && node)) { resetTrail(); pushUndo(); state.tracks.forEach(t => { randomizeInst(t, wild / 100); genRhythm(t, density); }); renderAll(); return; }
   if (pend.sounds && pend.beats) { pend.sounds = pend.beats = null; }
   else { if (!pend.sounds) pend.sounds = makeSounds(); if (!pend.beats) pend.beats = makeBeats(pend.sounds.map(p => p.role)); }
   sendPend();
@@ -1400,6 +1545,7 @@ $('#rndBoth').onclick = () => {
 $('#undo').disabled = true;
 $('#undo').onclick = () => {
   const s = undoStack.pop(); if (!s) return;
+  resetTrail();
   const o = normalize(JSON.parse(s)); state.tracks = o.tracks;
   $('#undo').disabled = !undoStack.length; renderAll();
 };
@@ -1428,7 +1574,8 @@ document.addEventListener('keydown', e => {
 
 /* ---------- animation: playhead + scope ---------- */
 let scopeBuf = null;
-function frame() {
+function frame(now) {
+  evolveTick(now);
   if (ctx) {
     const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
     const heard = ts && ts.contextTime ? ts.contextTime : ctx.currentTime - (ctx.outputLatency || 0) - (ctx.baseLatency || 0);
@@ -1554,7 +1701,7 @@ $('#saveKit').onclick = async () => {
 $('#loadKit').onclick = () => $('#kitFile').click();
 $('#kitFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  try { const s = normalize(JSON.parse(await f.text())); pushUndo(); state = s; renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = 'kit loaded'; }
+  try { const s = normalize(JSON.parse(await f.text())); pushUndo(); resetTrail(); state = s; state.flipSeq = engineFlips; state.randSeq = engineRand; clearPend(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = 'kit loaded'; }
   catch (err) { $('#xstat').textContent = 'not a Strike Eight kit file'; }
   e.target.value = '';
 };
