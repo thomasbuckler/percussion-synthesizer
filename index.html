@@ -18,9 +18,9 @@ body{margin:0}
 html,body{background:var(--bg);color:var(--fg)}
 body{font:300 11px/1.4 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.02em;padding:0 16px 48px;-webkit-font-smoothing:antialiased}
 button{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--fg);padding:4px 8px;text-transform:uppercase;letter-spacing:.07em;cursor:pointer;border-radius:0;line-height:1.3;white-space:nowrap}
-button.queued,button.arm{border-style:dashed;border-color:currentColor}
-.seg button:has(+button.queued){border-right-style:dashed;border-right-color:var(--fg)}
-.seg button:has(+button.on.queued){border-right-color:var(--bg)}
+button.counting{position:relative}
+button.counting>.countdown-label{visibility:hidden}
+button.counting::after{content:attr(data-countdown);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:inherit;font-size:var(--countdown-size,11px);letter-spacing:0;font-variant-numeric:tabular-nums;pointer-events:none}
 button.on{background:var(--fg);color:var(--bg)}
 button.press-dark{background:var(--fg);color:var(--bg)}
 button.press-light{background:var(--bg);color:var(--fg)}
@@ -75,6 +75,7 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .row{display:flex;align-items:center;gap:6px;min-width:max-content;padding-block:4px}
 .row .name{width:104px;text-align:left;overflow:hidden;text-overflow:ellipsis}
 .row .name.hit{background:var(--fg);color:var(--bg)}
+.row .name.on.hit{background:var(--bg);color:var(--fg)}
 .row .sm{padding:4px 5px;min-width:22px}
 .row .sm.pp{padding:4px 5px;display:inline-flex;align-items:center;justify-content:center;height:24px}
 .row>button,.row>.num{flex-shrink:0}
@@ -564,6 +565,13 @@ class FM8 extends AudioWorkletProcessor {
     this.port.postMessage({ type: 'flipped', flips: this.flips });
     return true;
   }
+  boundaryCountdown() {
+    const rate=this.st.bpm*this.st.spb*(this.st.lengthDivisor||1)/60;
+    if(!this.playing || !rate) return null;
+    const cycle=this.patternCycle(), origin=this.patternOrigin;
+    const k=origin+(rate>0 ? Math.ceil((this.nk-origin)/cycle) : Math.floor((this.pk-origin)/cycle))*cycle;
+    return Math.max(0,(this.ev(k)-this.pos)/rate);
+  }
   patternCycle() {
     // The measure clock follows STEPS, independently of any track's playback direction.
     // Internal sub-ticks retain exact fractional divisions without counting ping-pong bounces.
@@ -777,7 +785,7 @@ class FM8 extends AudioWorkletProcessor {
       this.port.postMessage({type:'step', k:this.stepK, idx:this.idxOut.slice(), f:this.stepFrame});
       this.stepDirty=false; this.stepAck=false; this.stepSentAt=this.clock;
     }
-    if (this.playing && (++this.blk & 7) === 0) this.port.postMessage({ type: 'clk' });
+    if (this.playing && (++this.blk & 7) === 0) this.port.postMessage({ type: 'clk', remaining:this.boundaryCountdown(), time:this.clock/sampleRate });
     return true;
   }
 }
@@ -978,7 +986,7 @@ async function loadWorklet(aw) {
   throw err || new Error('engine');
 }
 let audioReady = null, playCommand = 0;
-function clearTransportUI() { pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
+function clearTransportUI() { countdownClock=null; pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
 function engineDied(msg) {
   const c = ctx; ctx = null; node = null; an = null; audioReady = null;
   if (c) c.close().catch(() => {});
@@ -1002,7 +1010,7 @@ function prepareAudio() {
       const d = e.data;
       if (d.type.startsWith('record')) handleRecording(d);
       else if (d.type === 'step') { node.port.postMessage({type:'stepAck'}); if (!document.hidden) { stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate }); if (stepQ.length > 512) stepQ.splice(0, stepQ.length - 128); } }
-      else if (d.type === 'clk') evolveTick(performance.now());
+      else if (d.type === 'clk') { countdownClock={remaining:d.remaining,time:d.time}; evolveTick(performance.now()); }
       else if (d.type === 'engineError') $('#xstat').textContent = 'audio engine recovered from a bad value';
       else if (d.type === 'mixApplied') { state.mixSeq=engineMixSeq=d.seq;for(const c of d.changes){state.tracks[c.t][c.key]=c.value;if(c.key==='pp'&&!c.value){state.tracks[c.t].rev=false;revArm[c.t]=false;paintRev(c.t);}const key=c.t+':'+c.key;if(pendingMix[key]?.id===c.id)delete pendingMix[key];}paintMix();saveLocal(); }
       else if (d.type === 'undoApplied') { landUndo(d); }
@@ -2043,7 +2051,42 @@ document.addEventListener('keydown', e => {
 
 /* ---------- animation: playhead + scope ---------- */
 let scopeBuf = null;
+let countdownClock = null;
+const countdownButtons = new Map();
+function paintCountdowns() {
+  const pending = new Set(playing ? document.querySelectorAll('button.queued,button.arm') : []);
+  for(const [button,label] of countdownButtons) {
+    if(!pending.has(button) || !button.isConnected) {
+      label.replaceWith(...label.childNodes);
+      button.classList.remove('counting');
+      button.removeAttribute('data-countdown');
+      button.style.removeProperty('--countdown-size');
+      countdownButtons.delete(button);
+    }
+  }
+  const remaining=countdownClock && countdownClock.remaining!=null
+    ? Math.max(0,countdownClock.remaining-Math.max(0,ctx.currentTime-countdownClock.time)) : null;
+  const value=remaining==null ? '∞' : remaining>=100 ? String(Math.ceil(remaining)) : (Math.ceil(remaining*10)/10).toFixed(1);
+  for(const button of pending) {
+    if(!countdownButtons.has(button)) {
+      const label=document.createElement('span');
+      label.className='countdown-label';
+      if(!button.hasAttribute('aria-label')) button.setAttribute('aria-label',button.textContent.trim()||button.title);
+      // Keep original nodes (including icons), accessible names, and button dimensions.
+      label.append(...button.childNodes);
+      button.append(label);
+      countdownButtons.set(button,label);
+      button.classList.add('counting');
+    }
+    if(button.dataset.countdown!==value) {
+      button.dataset.countdown=value;
+      const width=button.clientWidth-4;
+      button.style.setProperty('--countdown-size',Math.min(11,width/(value.length*.62))+'px');
+    }
+  }
+}
 function frame(now) {
+  paintCountdowns();
   if (ctx) {
     const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
     const heard = ts && ts.contextTime ? ts.contextTime : ctx.currentTime - (ctx.outputLatency || 0) - (ctx.baseLatency || 0);
