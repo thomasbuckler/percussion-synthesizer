@@ -135,10 +135,13 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   </div>
   <div class="grp step-group"><span class="cap">Step</span><div class="seg" id="div"></div></div>
   <div class="grp"><div id="master" class="p inline"></div></div>
+</header>
+
+<section class="bar" id="audio-monitor" aria-label="Audio quality and output">
   <div class="grp"><span class="cap">Oversample</span><div class="seg" id="os"></div></div>
   <div class="spacer"></div>
   <div class="grp"><canvas id="scope" aria-label="Output oscilloscope"></canvas><span id="fmtinfo" class="status"></span></div>
-</header>
+</section>
 
 <section class="bar">
   <div class="grp"><span class="cap">Randomize</span></div>
@@ -266,6 +269,38 @@ class Voice {
   }
 }
 
+// Independent output protection for genuine high-rate recording. The monitor keeps its
+// original filter/limiter path; this processes the un-decimated synthesis at its own rate.
+class ExportOutput {
+  constructor(rate) {
+    this.dcR = 1 - TAU * 5 / rate;
+    this.xL = this.xR = this.yL = this.yR = this.L = this.R = 0;
+    this.laN = Math.max(8, Math.round(rate * 0.0015));
+    this.ceil = Math.pow(10, -0.3 / 20);
+    this.dlL = new Float64Array(this.laN); this.dlR = new Float64Array(this.laN); this.dp = 0;
+    this.qS = this.laN + 4; this.qV = new Float64Array(this.qS); this.qI = new Float64Array(this.qS);
+    this.qH = this.qT = this.li = 0; this.g = 1;
+    this.att = 1 - Math.exp(-1 / (this.laN / 5)); this.rel = 1 - Math.exp(-1 / (rate * 0.08));
+  }
+  process(left, right) {
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+    const ol = left - this.xL + this.dcR * this.yL, or = right - this.xR + this.dcR * this.yR;
+    this.xL = left; this.xR = right;
+    this.yL = Math.abs(ol) > 1e-25 ? ol : 0; this.yR = Math.abs(or) > 1e-25 ? or : 0;
+    const pk = Math.max(Math.abs(ol), Math.abs(or)), req = pk > this.ceil ? this.ceil / pk : 1;
+    const qS = this.qS;
+    while (this.qT !== this.qH && this.qV[(this.qT - 1 + qS) % qS] >= req) this.qT = (this.qT - 1 + qS) % qS;
+    this.qV[this.qT] = req; this.qI[this.qT] = this.li; this.qT = (this.qT + 1) % qS;
+    while (this.qH !== this.qT && this.qI[this.qH] <= this.li - this.laN) this.qH = (this.qH + 1) % qS;
+    const target = this.qV[this.qH]; this.g += (target - this.g) * (target < this.g ? this.att : this.rel); this.li++;
+    const dp = this.dp, xl = this.dlL[dp], xr = this.dlR[dp];
+    this.dlL[dp] = ol; this.dlR[dp] = or; this.dp = dp + 1 === this.laN ? 0 : dp + 1;
+    this.L = Math.max(-this.ceil, Math.min(this.ceil, xl * this.g));
+    this.R = Math.max(-this.ceil, Math.min(this.ceil, xr * this.g));
+    return Number.isFinite(this.L) && Number.isFinite(this.R);
+  }
+}
+
 class FM8 extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -309,6 +344,7 @@ class FM8 extends AudioWorkletProcessor {
   killAll() { for (const vs of this.vox) for (const v of vs) v.on = false; this.cnt.fill(0); this.total = 0; }
   kill(v) { if (v.on) { v.on = false; this.cnt[v.tr]--; this.total--; } }
   recover(msg) {
+    this.failRecording('Recording interrupted: audio engine recovered.');
     // Non-finite audio or an exception: silence everything and reset every feedback path so playback carries on.
     if (this.randomPing) this.port.postMessage({type:'randomPingStopped',id:this.randomPing.id});
     this.randomPing = null;
@@ -398,6 +434,7 @@ class FM8 extends AudioWorkletProcessor {
   setOS(os) {
     os = Math.max(1, Math.min(4, os | 0));
     if (os === this.os) return;
+    if (this.recording) this.failRecording('Recording cancelled: oversampling changed.');
     this.os = os; this.osr = sampleRate * os; this.fir = makeFir(os);
     const n = this.fir ? this.fir.length : 1;
     this.taps = n; this.fL = new Float64Array(n * 2); this.fR = new Float64Array(n * 2); this.fi = 0;
@@ -468,11 +505,17 @@ class FM8 extends AudioWorkletProcessor {
   }
   onMsg(d) {
     if (d.type === 'record') {
-      this.recording = {id:d.id,loops:Math.max(1,Math.min(64,d.loops|0)),start:null,end:null,ticks:0,limit:0,n:0,total:0,L:new Float32Array(4096),R:new Float32Array(4096)};
+      const factor = d.factor === 4 ? 4 : 1;
+      if (factor === 4 && this.os !== 4) {
+        this.port.postMessage({type:'recordError',id:d.id,message:'Select 4\u00d7 oversampling before a 4\u00d7 export.'}); return;
+      }
+      this.recording = {id:d.id,factor,sampleRate:sampleRate*factor,output:factor===4?new ExportOutput(sampleRate*4):null,
+        maxFrames:factor===4?Math.min(sampleRate*factor*600,16777216):sampleRate*600,
+        loops:Math.max(1,Math.min(64,d.loops|0)),start:null,end:null,ticks:0,limit:0,n:0,total:0,L:new Float32Array(4096),R:new Float32Array(4096)};
     }
     else if (d.type === 'recordCancel') this.recording = null;
     else if (d.type === 'state') this.setState(d.state);
-    else if (d.type === 'loadKit') { this.resetSync(); this.setState(d.state); if (this.playing) this.start(); this.reportDelay(); }
+    else if (d.type === 'loadKit') { this.failRecording('Recording cancelled: kit changed.'); this.resetSync(); this.setState(d.state); if (this.playing) this.start(); this.reportDelay(); }
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
@@ -709,12 +752,12 @@ class FM8 extends AudioWorkletProcessor {
       if((((k-this.patternOrigin)%cycle)+cycle)%cycle !== 0) return;
       r.limit = cycle*r.loops;
       // Align the boundary to the audio reaching the output after the DSP delay.
-      r.delay = this.laN + (this.taps-1)/(2*this.os);
-      r.start = this.clock + Math.ceil(r.delay);
-      this.port.postMessage({type:'recordStarted',id:r.id,frame:r.start});
+      r.delay = r.factor === 4 ? r.output.laN : Math.ceil(this.laN + (this.taps-1)/(2*this.os));
+      r.start = this.clock * r.factor + r.delay;
+      this.port.postMessage({type:'recordStarted',id:r.id,frame:r.start,sampleRate:r.sampleRate,factor:r.factor});
     } else {
       r.ticks++;
-      if(r.ticks >= r.limit) r.end = this.clock + Math.ceil(r.delay);
+      if(r.ticks >= r.limit) r.end = this.clock * r.factor + r.delay;
     }
   }
   flushRecording(r) {
@@ -722,10 +765,19 @@ class FM8 extends AudioWorkletProcessor {
     const L=r.L.slice(0,r.n),R=r.R.slice(0,r.n);
     this.port.postMessage({type:'recordChunk',id:r.id,L,R},[L.buffer,R.buffer]);r.n=0;
   }
-  captureOutput(left,right) {
-    const r=this.recording;if(!r||r.start===null||this.clock<r.start)return;
-    if(r.end!==null&&this.clock>=r.end){this.flushRecording(r);this.port.postMessage({type:'recordDone',id:r.id,frames:r.total});this.recording=null;return;}
-    if(r.total>=sampleRate*600){this.port.postMessage({type:'recordError',id:r.id,message:'Recording exceeded 10 minutes. Choose fewer loops or a faster tempo.'});this.recording=null;return;}
+  failRecording(message) {
+    if (this.recording) this.port.postMessage({type:'recordError',id:this.recording.id,message});
+    this.recording = null;
+  }
+  captureOversampled(left,right,sub) {
+    const r=this.recording;if(!r||r.factor!==4)return;
+    if(!r.output.process(left*this.st.master,right*this.st.master)){this.failRecording('Recording interrupted: non-finite audio.');return;}
+    this.captureOutput(r.output.L,r.output.R,this.clock*4+sub);
+  }
+  captureOutput(left,right,frame=this.clock) {
+    const r=this.recording;if(!r||r.start===null||frame<r.start)return;
+    if(r.end!==null&&frame>=r.end){this.flushRecording(r);this.port.postMessage({type:'recordDone',id:r.id,frames:r.total,sampleRate:r.sampleRate});this.recording=null;return;}
+    if(r.total>=r.maxFrames){this.failRecording(r.factor===4?'4\u00d7 recording reached its memory limit. Choose fewer loops or a faster tempo.':'Recording exceeded 10 minutes. Choose fewer loops or a faster tempo.');return;}
     r.L[r.n]=left;r.R[r.n]=right;r.n++;r.total++;
     if(r.n===4096)this.flushRecording(r);
   }
@@ -887,10 +939,14 @@ class FM8 extends AudioWorkletProcessor {
       if (this.playing) this.advance();
       let yl, yr;
       if (this.total === 0) { if (this.quiet < taps + 2) this.quiet++; } else this.quiet = 0;
-      if (this.total === 0 && this.quiet >= taps + 2) { yl = 0; yr = 0; }   // nothing sounding and the filter history is empty
+      if (this.total === 0 && this.quiet >= taps + 2) {
+        yl = 0; yr = 0;
+        if (this.recording && this.recording.factor === 4) for (let s=0;s<os;s++) this.captureOversampled(0,0,s);
+      }   // nothing sounding and the filter history is empty
       else if (fir) {
         for (let s = 0; s < os; s++) {
           this.renderSub();
+          if (this.recording && this.recording.factor === 4) this.captureOversampled(this.sL,this.sR,s);
           const i = this.fi;
           fL[i] = fL[i + taps] = this.sL;
           fR[i] = fR[i + taps] = this.sR;
@@ -923,7 +979,7 @@ class FM8 extends AudioWorkletProcessor {
       let ql = xl * this.lg, qr = xr * this.lg;
       L[f] = ql > c ? c : ql < -c ? -c : ql;
       R[f] = qr > c ? c : qr < -c ? -c : qr;
-      this.captureOutput(L[f],R[f]);
+      if (this.recording && this.recording.factor === 1) this.captureOutput(L[f],R[f]);
       this.clock++;
     }
     if (this.stepDirty && this.stepAck && this.clock-this.stepSentAt >= sampleRate/120) {
@@ -1151,6 +1207,7 @@ async function loadWorklet(aw) {
 let audioReady = null, playCommand = 0;
 function clearTransportUI() { stopRandomPing(); if(delayReturning){state.decayMultiplier=delayTarget;delayReturning=false;paintDelayControls();saveLocal();} countdownClock=null; pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
 function engineDied(msg) {
+  cancelLiveExport('Recording interrupted: audio engine stopped.');
   const c = ctx; ctx = null; node = null; an = null; audioReady = null;
   if (c) c.close().catch(() => {});
   playing = false; $('#play').textContent = 'Play'; $('#play').classList.remove('on'); paintEvolution();
@@ -1170,7 +1227,9 @@ function prepareAudio() {
     state.lengthSeq = 0; engineLengthSeq = 0;
     state.divisionSeq = 0; state.flipSeq = 0; state.randSeq = 0; engineFlips = 0; engineRand = 0;
     node = new AudioWorkletNode(ctx, 'fm8', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { state } });
+    const activeNode=node, activeContext=ctx;
     node.port.onmessage = e => {
+      if(node!==activeNode || ctx!==activeContext)return;
       const d = e.data;
       if (d.type.startsWith('record')) handleRecording(d);
       else if (d.type === 'step') { node.port.postMessage({type:'stepAck'}); if (!document.hidden) { stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate }); if (stepQ.length > 512) stepQ.splice(0, stepQ.length - 128); } }
@@ -1190,7 +1249,7 @@ function prepareAudio() {
     node.onprocessorerror = () => engineDied('audio engine stopped \u2014 press Play');
     an = ctx.createAnalyser(); an.fftSize = 2048;
     node.connect(an); node.connect(ctx.destination);
-      sendRandomPing(); fmtInfo(); requestAnimationFrame(frame); return true;
+      sendRandomPing(); fmtInfo(); return true;
     } catch (e) {
       const failed = ctx; ctx = null; node = null; an = null; audioReady = null;
       if (failed) failed.close().catch(() => {});
@@ -1221,13 +1280,15 @@ document.addEventListener('keydown', e => { if (['Tab', 'ArrowUp', 'ArrowDown', 
 document.addEventListener('pointerdown', () => document.documentElement.classList.remove('kbd'), true);
 function fmtInfo() {
   $('#fmtinfo').textContent = ctx ? (ctx.sampleRate / 1000).toFixed(1) + 'kHz \u00b7 ' + state.os + '\u00d7 \u00b7 f64' : '';
+  renderExportRate();
 }
 let syncPending = false;
 function sync() {
   saveLocal();
   if (!node || syncPending) return;
   syncPending = true;
-  requestAnimationFrame(() => { syncPending = false; node.port.postMessage({ type: 'state', state }); });
+  const target=node;
+  requestAnimationFrame(() => { syncPending = false; if(node===target)target.port.postMessage({ type: 'state', state }); });
 }
 async function audition(ti, v) {
   if (!(await ensureAudio())) return;
@@ -1501,6 +1562,7 @@ function renderHeader() {
   slider(MASTER_SPEC, state, 'master', null, $('#master'));
   renderDivision();
   seg($('#os'), [[1, '1\u00d7'], [2, '2\u00d7'], [4, '4\u00d7']], () => state.os, v => { state.os = v; sync(); setTimeout(fmtInfo, 30); });
+  paintExportControls();
   paintDelayControls();
 }
 
@@ -2393,7 +2455,28 @@ $('#autoReturn').title='Repeat the divided pattern for one original-length cycle
 $('#lengthDivide').title = 'Change loop length at the end of the current pattern. Press the selected divisor to queue full length; press a queued choice again to cancel.';
 numField($('#lenAll'), () => Number((Math.max(...state.tracks.map(t => t.len)) / (state.lengthDivisor || 1)).toFixed(5)), v => { state.lengthDivisor = 1; state.tracks.forEach(t => t.len = v); renderSeq(); sync(); }, 1, 64, 'Steps', true);
 numField($('#loops'), () => xp.loops, v => xp.loops = v, 1, 64, 'Loops');
-seg($('#xrate'), [[0, 'Live'], [44100, '44.1k'], [48000, '48k'], [96000, '96k']], () => xp.rate, v => xp.rate = v);
+function enableFourTimesExport() {
+  if (state.os !== 4) { state.os = 4; $('#os')._upd?.(); sync(); }
+}
+function renderExportRate() {
+  const highLabel = '4\u00d7' + (ctx ? ' ' + (ctx.sampleRate*4/1000) + 'k' : '');
+  seg($('#xrate'), [[0, 'Live'], [44100, '44.1k'], [48000, '48k'], [96000, '96k'], ['4x', highLabel]], () => xp.rate, v => {
+    xp.rate = v;
+    if (v === '4x') {
+      enableFourTimesExport();
+      $('#xstat').textContent = ctx ? '4\u00d7 capture at '+(ctx.sampleRate*4/1000)+' kHz' : '4\u00d7 capture';
+      fmtInfo();
+    }
+  });
+  $('#xrate').lastElementChild.title = 'Genuine 4\u00d7 recording before downsampling. Selects 4\u00d7 synthesis and preserves live changes.';
+  paintExportControls();
+}
+function paintExportControls() {
+  const busy = !!liveExport, locked = busy && !liveExport.encoding && liveExport.factor === 4;
+  for (const b of $('#xrate').children) b.disabled = busy;
+  for (const b of $('#xbits').children) b.disabled = busy;
+  for (const b of $('#os').children) b.disabled = locked && !b.classList.contains('on');
+}
 seg($('#xbits'), [[16, '16'], [24, '24'], [32, '32f']], () => xp.bits, v => xp.bits = v);
 
 document.addEventListener('keydown', e => {
@@ -2418,7 +2501,7 @@ function paintCountdowns() {
       countdownButtons.delete(button);
     }
   }
-  const remaining=countdownClock && countdownClock.remaining!=null
+  const remaining=ctx && countdownClock && countdownClock.remaining!=null
     ? Math.max(0,countdownClock.remaining-Math.max(0,ctx.currentTime-countdownClock.time)) : null;
   const value=remaining==null ? '\u221e' : remaining>=100 ? String(Math.ceil(remaining)) : (Math.ceil(remaining*10)/10).toFixed(1);
   for(const button of pending) {
@@ -2463,8 +2546,9 @@ function frame(now) {
 }
 
 /* ---------- export ---------- */
-function encodeWav(chs, sr, bits) {
-  const n = chs[0].length, nc = chs.length, bps = bits / 8, isF = bits === 32;
+function encodeWav(chs, sr, bits, chunks = null) {
+  const n = chunks ? chunks.reduce((sum,c)=>sum+c[0].length,0) : chs[0].length;
+  const nc = chunks ? 2 : chs.length, bps = bits / 8, isF = bits === 32;
   const dataLen = n * nc * bps, hdr = isF ? 58 : 44;
   const buf = new ArrayBuffer(hdr + dataLen), dv = new DataView(buf);
   let p = 0; const s4 = s => { for (let i = 0; i < 4; i++) dv.setUint8(p++, s.charCodeAt(i)); };
@@ -2474,15 +2558,41 @@ function encodeWav(chs, sr, bits) {
   if (isF) { u16(0); s4('fact'); u32(4); u32(n); }
   s4('data'); u32(dataLen);
   const q = bits === 16 ? 32767 : 8388607, lsb = 1 / q;
-  for (let i = 0; i < n; i++) for (let c = 0; c < nc; c++) {
-    let x = chs[c][i];
-    if (isF) { dv.setFloat32(p, x, true); p += 4; continue; }
-    x += (Math.random() - Math.random()) * lsb; // TPDF dither
-    let v = Math.round(clamp(x, -1, 1) * q); v = clamp(v, -q - 1, q);
-    if (bits === 16) { dv.setInt16(p, v, true); p += 2; }
-    else { dv.setUint8(p, v & 255); dv.setUint8(p + 1, (v >> 8) & 255); dv.setUint8(p + 2, (v >> 16) & 255); p += 3; }
+  let chunkIndex=0,offset=0;
+  for (let i = 0; i < n; i++) {
+    const source=chunks?chunks[chunkIndex]:chs, at=chunks?offset:i;
+    for (let c = 0; c < nc; c++) {
+      let x = source[c][at];
+      if (isF) { dv.setFloat32(p, x, true); p += 4; continue; }
+      x += (Math.random() - Math.random()) * lsb; // TPDF dither
+      let v = Math.round(clamp(x, -1, 1) * q); v = clamp(v, -q - 1, q);
+      if (bits === 16) { dv.setInt16(p, v, true); p += 2; }
+      else { dv.setUint8(p, v & 255); dv.setUint8(p + 1, (v >> 8) & 255); dv.setUint8(p + 2, (v >> 16) & 255); p += 3; }
+    }
+    if(chunks && ++offset===source[0].length){chunks[chunkIndex++]=null;offset=0;}
   }
   return new Uint8Array(buf);
+}
+function encodeWavAsync(chs,sr,bits,chunks=null) {
+  return new Promise((resolve,reject)=>{
+    let worker,url,started=false;
+    const cleanup=()=>{worker?.terminate();if(url)URL.revokeObjectURL(url);};
+    const fallback=()=>{cleanup();try{resolve(encodeWav(chs,sr,bits,chunks));}catch(e){reject(e);}};
+    try {
+      const source='const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));\n'+encodeWav.toString()+
+        '\nonmessage=e=>{try{const d=e.data,b=encodeWav(d.chs,d.sr,d.bits,d.chunks);postMessage({buffer:b.buffer},[b.buffer]);}catch(e){postMessage({error:e.message});}};postMessage({ready:true});';
+      url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));worker=new Worker(url);
+      worker.onerror=e=>{e.preventDefault();if(!started)fallback();else{cleanup();reject(new Error('WAV encoder stopped.'));}};
+      worker.onmessage=e=>{
+        if(e.data.ready){
+          started=true;
+          try{const transfer=chunks?chunks.flatMap(c=>c.map(a=>a.buffer)):chs.map(a=>a.buffer);worker.postMessage({chs,sr,bits,chunks},transfer);}
+          catch(err){cleanup();reject(err);}return;
+        }
+        cleanup();if(e.data.error)reject(new Error(e.data.error));else resolve(new Uint8Array(e.data.buffer));
+      };
+    }catch(e){fallback();}
+  });
 }
 const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
@@ -2507,7 +2617,7 @@ async function offerFile(filename, blob, alt) {
     try { await dl.save({ filename, data: blob }); return 'saved'; }
     catch (e) {
       if (e && (e.code === 'rejected_extension' || e.code === 'extension_not_enabled') && alt) {
-        try { await dl.save({ filename: alt.filename, data: alt.blob }); return 'zipped'; }
+        try { await dl.save({ filename: alt.filename, data: typeof alt.blob==='function'?alt.blob():alt.blob }); return 'zipped'; }
         catch (e2) { if (e2 && e2.code === 'declined') return 'declined'; if (e2 && e2.code === 'rate_limited') return 'busy'; }
       }
       if (e && e.code === 'declined') return 'declined'; if (e && e.code === 'rate_limited') return 'busy';
@@ -2518,43 +2628,64 @@ async function offerFile(filename, blob, alt) {
   return 'saved';
 }
 let liveExport = null, exportCounter = 0;
+function cancelLiveExport(message) {
+  if (!liveExport || liveExport.encoding) return;
+  node?.port.postMessage({type:'recordCancel'});
+  liveExport=null;$('#export').textContent='Export';$('#export').disabled=false;$('#xstat').textContent=message;paintExportControls();
+}
 function handleRecording(d) {
   const r=liveExport;if(!r||r.id!==d.id)return;
-  if(d.type==='recordStarted') $('#xstat').textContent='recording '+r.loops+' loop'+(r.loops===1?'':'s')+'\u2026';
+  if(d.type==='recordStarted') {
+    if(d.factor!==r.factor || !Number.isFinite(d.sampleRate) || d.sampleRate<=0){cancelLiveExport('Recording failed: invalid sample rate.');return;}
+    r.nativeRate=d.sampleRate;
+    $('#xstat').textContent='recording '+r.loops+' loop'+(r.loops===1?'':'s')+' at '+(r.nativeRate/1000)+' kHz\u2026';
+  }
   else if(d.type==='recordChunk'){r.chunks.push([d.L,d.R]);r.frames+=d.L.length;}
-  else if(d.type==='recordError'){liveExport=null;$('#export').textContent='Export';$('#export').disabled=false;$('#xstat').textContent=d.message;}
-  else if(d.type==='recordDone'){finishLiveExport(r);}
+  else if(d.type==='recordError'){cancelLiveExport(d.message);}
+  else if(d.type==='recordDone'){
+    if(d.frames!==r.frames || d.sampleRate!==r.nativeRate){cancelLiveExport('Recording failed: incomplete audio.');return;}
+    finishLiveExport(r);
+  }
 }
 async function finishLiveExport(r) {
-  const stat=$('#xstat'),btn=$('#export');btn.disabled=true;stat.textContent='encoding\u2026';
+  const stat=$('#xstat'),btn=$('#export');r.encoding=true;btn.disabled=true;stat.textContent='encoding\u2026';paintExportControls();
   try {
     if(!r.frames)throw new Error('No audio captured');
-    let channels=[new Float32Array(r.frames),new Float32Array(r.frames)],offset=0;
-    for(const chunk of r.chunks){channels[0].set(chunk[0],offset);channels[1].set(chunk[1],offset);offset+=chunk[0].length;}r.chunks=[];
-    const sr=r.rate||r.nativeRate;
+    const sr=r.factor===4?r.nativeRate:(r.rate||r.nativeRate);
+    let wav;
     if(sr!==r.nativeRate){
+      let channels=[new Float32Array(r.frames),new Float32Array(r.frames)],offset=0;
+      for(const chunk of r.chunks){channels[0].set(chunk[0],offset);channels[1].set(chunk[1],offset);offset+=chunk[0].length;}r.chunks=[];
       const off=new OfflineAudioContext(2,Math.max(1,Math.round(r.frames*sr/r.nativeRate)),sr);
       const buffer=off.createBuffer(2,r.frames,r.nativeRate);channels.forEach((c,i)=>buffer.copyToChannel(c,i));
       const source=off.createBufferSource();source.buffer=buffer;source.connect(off.destination);source.start();
       const rendered=await off.startRendering();channels=[rendered.getChannelData(0),rendered.getChannelData(1)];
-    }
-    const wav=encodeWav(channels,sr,r.bits),base='percussion-synth_live_'+r.loops+'loops_'+sr+'Hz_'+(r.bits===32?'32f':r.bits);
+      wav=await encodeWavAsync(channels,sr,r.bits);
+    } else {wav=await encodeWavAsync(null,sr,r.bits,r.chunks);r.chunks=[];}
+    const base='percussion-synth_'+(r.factor===4?'4x_':'live_')+r.loops+'loops_'+sr+'Hz_'+(r.bits===32?'32f':r.bits);
     stat.textContent='saving\u2026';
-    const result=await offerFile(base+'.wav',new Blob([wav],{type:'audio/wav'}),{filename:base+'.zip',blob:zipStore(base+'.wav',wav)});
+    const result=await offerFile(base+'.wav',new Blob([wav],{type:'audio/wav'}),{filename:base+'.zip',blob:()=>zipStore(base+'.wav',wav)});
     stat.textContent=result==='saved'||result==='zipped'?'saved '+(r.frames/r.nativeRate).toFixed(2)+'s WAV':result==='declined'?'save declined':'try again in a moment';
   }catch(e){stat.textContent='export failed \u2014 '+e.message;}
-  finally{liveExport=null;btn.disabled=false;btn.textContent='Export';}
+  finally{liveExport=null;btn.disabled=false;btn.textContent='Export';paintExportControls();}
 }
 $('#export').onclick=async()=>{
   const btn=$('#export'),stat=$('#xstat');
-  if(liveExport){node.port.postMessage({type:'recordCancel'});liveExport=null;btn.textContent='Export';stat.textContent='cancelled';return;}
+  if(liveExport){cancelLiveExport('cancelled');return;}
   if(Math.abs(state.bpm)<0.01){stat.textContent='Set a nonzero tempo to record.';return;}
   btn.disabled=true;
   if(!(await ensureAudio())){btn.disabled=false;stat.textContent='audio unavailable';return;}
-  const r={id:++exportCounter,loops:xp.loops,rate:xp.rate,bits:xp.bits,nativeRate:ctx.sampleRate,chunks:[],frames:0};liveExport=r;
+  const factor=xp.rate==='4x'?4:1, nativeRate=ctx.sampleRate*factor;
+  if(factor===4){
+    const seconds=xp.loops*Math.max(...state.tracks.map(t=>t.len))*60/(Math.abs(state.bpm)*state.spb*(state.lengthDivisor||1));
+    if(seconds*nativeRate>16777216){btn.disabled=false;stat.textContent='4\u00d7 capture limit: '+Math.floor(16777216/nativeRate)+'s. Choose fewer loops or a faster tempo.';return;}
+    enableFourTimesExport();fmtInfo();
+  }
+  const r={id:++exportCounter,loops:xp.loops,rate:xp.rate,bits:xp.bits,factor,nativeRate,chunks:[],frames:0};liveExport=r;paintExportControls();
   node.port.postMessage({type:'state',state});
-  node.port.postMessage({type:'record',id:r.id,loops:r.loops});
+  node.port.postMessage({type:'record',id:r.id,loops:r.loops,factor});
   if(!playing)await togglePlay();
+  if(liveExport!==r)return;
   btn.disabled=false;btn.textContent='Cancel';stat.textContent='waiting for downbeat\u2026';
 };
 $('#saveKit').onclick = async () => {
@@ -2583,7 +2714,9 @@ $('#kitFile').onchange = async e => {
 
 /* ---------- boot ---------- */
 void prepareAudio();
+renderExportRate();
 renderHeader(); renderVMode(); renderSeq(); renderEditor();
+requestAnimationFrame(frame);
 let rz = 0; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i); }, 100); });
 if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { fgCache = null; drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i); });
 new MutationObserver(() => { fgCache = null; drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
