@@ -2703,8 +2703,7 @@ $('#export').onclick=async()=>{
   btn.disabled=false;btn.textContent='Cancel';stat.textContent='waiting for downbeat\u2026';
 };
 $('#saveKit').onclick = async () => {
-  const r = await offerFile('percussion-synth-kit.json', new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' }));
-  $('#xstat').textContent = r === 'saved' ? 'kit saved' : r === 'declined' ? 'save declined' : '';
+  await offerFile('percussion-synth-kit.json', new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' }));
 };
 $('#loadKit').onclick = () => $('#kitFile').click();
 $('#kitFile').onchange = async e => {
@@ -2720,7 +2719,7 @@ $('#kitFile').onchange = async e => {
     state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = 0;
     engineMixSeq = engineLengthSeq = 0; engineRand = 0; state.flipSeq = engineFlips;
     if (node) node.port.postMessage({ type: 'loadKit', state });
-    clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = 'kit loaded';
+    clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = '';
   }
   catch (err) { $('#xstat').textContent = 'not a kit file'; }
   e.target.value = '';
@@ -2854,9 +2853,8 @@ $('#saveAll').onclick = async () => {
     const snapshot = captureSession();
     validateSession(snapshot); // A file offered by Save All Parameters must also be loadable.
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const r = await offerFile('percussion-synth-all_' + stamp + '.json', new Blob([JSON.stringify(snapshot)], {type: 'application/json'}));
-    $('#xstat').textContent = r === 'saved' ? 'all settings saved' : r === 'declined' ? 'save declined' : '';
-  } catch (err) { $('#xstat').textContent = 'Save All Parameters failed: ' + err.message; }
+    await offerFile('percussion-synth-all_' + stamp + '.json', new Blob([JSON.stringify(snapshot)], {type: 'application/json'}));
+  } catch (err) { console.error('Save All Parameters failed:', err); }
   finally { button.disabled = false; }
 };
 $('#loadAll').onclick = () => $('#sessionFile').click();
@@ -2869,7 +2867,7 @@ $('#sessionFile').onchange = async e => {
     const saved = validateSession(JSON.parse(await file.text()));
     if (request !== sessionFileRequest) return;
     restoreSession(saved);
-    $('#xstat').textContent = 'all settings loaded — press Play';
+    $('#xstat').textContent = '';
   } catch (err) { if (request === sessionFileRequest) $('#xstat').textContent = 'Load All failed: ' + err.message; }
   finally { if (request === sessionFileRequest) input.value = ''; }
 };
