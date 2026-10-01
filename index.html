@@ -155,7 +155,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 <section id="seq" tabindex="0" role="region" aria-label="Step sequencer">
   <div class="seqcontent">
   <div class="seqtop">
-    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="clear">Clear</button></div></div>
+    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="randomPingPause" class="random-pp" type="button" aria-label="Hold randomization ping-pong during divisors" aria-pressed="false"></button><button id="clear">Clear</button></div></div>
   </div>
   <div class="rows" id="rows"></div>
   </div>
@@ -226,6 +226,7 @@ function cleanState(s) {
   s.decayMultiplier = N(s.decayMultiplier, 1, 0.1, 1);
   s.decayAutoReturn = !!s.decayAutoReturn; s.decaySeq = Math.floor(N(s.decaySeq, 0, 0, Number.MAX_SAFE_INTEGER));
   s.transportPingPong = !!s.transportPingPong;
+  s.randomPingDivisorHold = !!s.randomPingDivisorHold;
   if (!Array.isArray(s.tracks)) s.tracks = [];
   while (s.tracks.length < 8) s.tracks.push({});
   for (let t = 0; t < 8; t++) {
@@ -486,6 +487,7 @@ class FM8 extends AudioWorkletProcessor {
       }
     }
     else if (d.type === 'randomPingNext') { if (this.randomPing && this.randomPing.id === d.id) this.randomPing.tracks = d.tracks || null; }
+    else if (d.type === 'randomPingDivisorHold' && this.st) this.st.randomPingDivisorHold = !!d.on;
     else if (d.type === 'transportPingPong' && this.st) this.st.transportPingPong = !!d.on;
     else if (d.type === 'flipArm') this.flipArm = !!d.on;
     else if (d.type === 'revArm') this.revArm[d.t] = d.on ? 1 : 0;
@@ -750,6 +752,8 @@ class FM8 extends AudioWorkletProcessor {
     const p = this.randomPing;
     if (!p || !this.boundary(k) || p.boundary === k) return;
     p.boundary = k;
+    // Keep the phase intact while divided; the return boundary resumes it automatically.
+    if (this.st.randomPingDivisorHold && (this.st.lengthDivisor || 1) > 1) return;
     const phase = p.next;
     let tracks;
     if (phase === 'new') {
@@ -1084,7 +1088,7 @@ function defaultKit() {
       len: 7, steps: pat('3000000') }),
   ];
 }
-const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
+const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, randomPingDivisorHold: false, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
 let state = loadLocal() || Object.assign({}, DEFAULTS, { tracks: defaultKit() });
 let delayReturning = false, delayHolding = false, delayTarget = 1, delayUiPaint = 0;
 let sel = 0, wild = 35, density = 45, clip = null;
@@ -1102,6 +1106,7 @@ function normalize(s) {
   const escKnown = !!s.escDefaultV1;
   const o = Object.assign({}, DEFAULTS, s);
   o.transportPingPong = s.transportPingPong === true;
+  o.randomPingDivisorHold = s.randomPingDivisorHold === true;
   o.decayMultiplier = Number.isFinite(o.decayMultiplier) ? clamp(o.decayMultiplier, 0.1, 1) : 1;
   o.decayAutoReturn = s.decayAutoReturn === true; o.decaySeq = 0;
   o.autoReturn = escKnown ? !!s.autoReturn : true; o.escDefaultV1 = true;   // ESC is remembered; older saves get the default once
@@ -1275,9 +1280,9 @@ function parameterDrag(host, start, move, ignore = () => false) {
     if (cancelParameterDrag === finish) cancelParameterDrag = null;
     if (host.hasPointerCapture(g.id)) host.releasePointerCapture(g.id);
   };
-  const grab = e => {
+  const grab = (e, origin = e) => {
     gesture.active = true;
-    start(e, gesture.touch);
+    start(origin, gesture.touch);
     host.setPointerCapture(e.pointerId);
     host.focus({preventScroll:true});
     e.preventDefault();
@@ -1285,7 +1290,8 @@ function parameterDrag(host, start, move, ignore = () => false) {
   host.addEventListener('pointerdown', e => {
     if (e.button !== 0 || e.isPrimary === false || ignore(e)) return;
     cancelParameterDrag?.();
-    gesture = {id:e.pointerId, x:e.clientX, y:e.clientY, touch:e.pointerType === 'touch', active:false, moved:false};
+    // Fixed level-10 touch feel: five CSS pixels to engage, with vertical scrolling preserved.
+    gesture = {id:e.pointerId, x:e.clientX, y:e.clientY, touch:e.pointerType === 'touch', active:false, moved:false, threshold:5};
     cancelParameterDrag = finish;
     // A finger can scroll naturally; editing starts only after a deliberate sideways drag.
     if (!gesture.touch) grab(e);
@@ -1296,11 +1302,13 @@ function parameterDrag(host, start, move, ignore = () => false) {
     if (!host.isConnected) { finish(e); return; }
     if (!g.active) {
       const dx = e.clientX-g.x, dy = e.clientY-g.y;
-      if (Math.hypot(dx, dy) < 12) return;
+      if (Math.hypot(dx, dy) < g.threshold) return;
       g.moved = true;
-      if (Math.abs(dx) < 12 || Math.abs(dx) <= Math.abs(dy)*1.5) { finish(e); return; }
-      // Rebase at the threshold so grabbing a control never jumps its value.
-      grab(e); return;
+      if (Math.abs(dy) >= g.threshold && Math.abs(dy) >= Math.abs(dx)*1.2) { finish(e); return; }
+      if (Math.abs(dx) < g.threshold || Math.abs(dx) <= Math.abs(dy)*1.2) return;
+      // Keep ambiguous touches available, then apply movement beyond the small dead zone immediately.
+      grab(e, {clientX:g.x + Math.sign(dx)*g.threshold, clientY:e.clientY});
+      move(e, true); return;
     }
     if (g.touch) { g.moved = true; e.preventDefault(); }
     move(e, g.touch);
@@ -1341,7 +1349,7 @@ function slider(spec, obj, key, onChange, host) {
     const w = e.shiftKey ? 1800 : Math.max(120, t.clientWidth * 1.4);
     if (e.shiftKey) { sx = e.clientX; sy = e.clientY; sn = clamp(sn + d / w, 0, 1); set(toVal(spec, sn)); }
     else set(toVal(spec, sn + d / w));
-  }, e => e.target.tagName === 'INPUT' || v.contains(e.target));
+  }, e => e.target.tagName === 'INPUT' || (e.pointerType !== 'touch' && v.contains(e.target)));
   root.addEventListener('dblclick', e => {
     if (e.target === v || v.contains(e.target)) return;
     set(spec.d != null ? spec.d : spec.min);
@@ -1657,6 +1665,7 @@ function renderSeq() {
 const revArm = new Array(8).fill(false);
 // ping-pong glyph: forward arrow on top, backward arrow below, 1px strokes
 const PP_ICON = '<svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 3.5H12.5M9.5 0.5L12.5 3.5L9.5 6.5"/><path d="M13 8.5H1.5M4.5 5.5L1.5 8.5L4.5 11.5"/></svg>';
+const PP_PAUSE_ICON = PP_ICON.replace('</svg>', '<path d="M1 11L13 1" stroke-width="1.5"/></svg>');
 function paintRev(ti) {
   const r = rowEls[ti]; if (!r) return;
   const on = !!state.tracks[ti].rev;
@@ -2188,13 +2197,18 @@ function makeBeats(roles, tracks = state.tracks) {
 let randomPing = null, randomPingCounter = 0, randomPingMinimumId = 0;
 const RANDOM_PING_BUTTONS = { sounds: '#rndSoundsPing', beats: '#rndBeatsPing', both: '#rndBothPing' };
 function paintRandomPing() {
+  const hold = !!state.randomPingDivisorHold, paused = hold && (state.lengthDivisor || 1) > 1;
   for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
     const b = $(id), on = randomPing?.mode === mode;
     b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
     const name = mode === 'both' ? 'Sounds and beats' : mode === 'sounds' ? 'Sounds' : 'Beats';
     b.title = name + ': alternate a fresh randomization and undo each measure. One mode at a time; switch off to keep the current result.' +
-      (on ? ' Next measure: ' + (randomPing.next === 'undo' ? 'undo.' : 'new variation.') : ' Starts at the next measure while playing.');
+      (on ? (paused ? ' Held during the divisor. Next at full length: ' : ' Next measure: ') + (randomPing.next === 'undo' ? 'undo.' : 'new variation.') : ' Starts at the next measure while playing.');
   }
+  const pause = $('#randomPingPause');
+  pause.classList.toggle('on', hold); pause.setAttribute('aria-pressed', hold);
+  pause.title = 'When enabled, hold Sounds, Beats, and Both ping-pong only while a divisor is active; resume automatically when full length returns. Playback and Flip keep running.' +
+    (hold ? (paused ? ' Currently holding during the divisor.' : ' Enabled; ping-pong continues at full length.') : ' Off.');
 }
 function makeRandomPingTracks() {
   if (!randomPing) return null;
@@ -2245,6 +2259,12 @@ for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
   $(id).innerHTML = PP_ICON;
   $(id).onclick = () => toggleRandomPing(mode);
 }
+$('#randomPingPause').innerHTML = PP_PAUSE_ICON;
+$('#randomPingPause').onclick = () => {
+  state.randomPingDivisorHold = !state.randomPingDivisorHold;
+  if (node) node.port.postMessage({type:'randomPingDivisorHold',on:state.randomPingDivisorHold});
+  paintRandomPing(); saveLocal();
+};
 paintRandomPing();
 function paintRnd() {
   const s = !!pend.sounds, b = !!pend.beats;
@@ -2358,6 +2378,7 @@ function paintLengthDivision() {
   $('#autoReturn').setAttribute('aria-pressed',!!state.autoReturn);
   if ($('#lenAll')._upd) $('#lenAll')._upd();
   [...$('#lengthDivide').children].forEach((b,i) => { const divisor = [2,3,4,8,16][i]; b.classList.toggle('on', d === divisor); b.classList.toggle('queued', pendingLengthDivision === divisor || (pendingLengthDivision === 1 && d === divisor)); b.setAttribute('aria-pressed', d === divisor); });
+  paintRandomPing();
 }
 seg($('#lengthDivide'), [[2,'/2'],[3,'/3'],[4,'/4'],[8,'/8'],[16,'/16']], () => state.lengthDivisor || 1, d => {
   const value = state.lengthDivisor === d ? 1 : d;
