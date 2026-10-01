@@ -79,6 +79,8 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .row .sm{padding:4px 5px;min-width:22px}
 .row .sm.pp,#transportPingPong{padding:4px 5px;display:inline-flex;align-items:center;justify-content:center;height:24px}
 #transportPingPong{height:auto}
+.random-pp{display:inline-flex;align-items:center;justify-content:center;padding:4px 5px}
+.random-pp svg{flex:none}
 .row>button,.row>.num{flex-shrink:0}
 .steps{display:flex;margin-left:8px;touch-action:pan-x pan-y;user-select:none;-webkit-user-select:none}
 .cell{flex:0 0 var(--cw);height:28px;border:1px solid var(--fg);margin-left:-1px;position:relative;cursor:pointer;background:var(--bg)}
@@ -140,22 +142,14 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 
 <section class="bar">
   <div class="grp"><span class="cap">Randomize</span></div>
-  <div class="grp"><button id="rndSounds">Sounds</button><div id="kWild" class="knob"></div></div>
-  <div class="grp"><button id="rndBeats">Beats</button><div id="kDens" class="knob"></div></div>
-  <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="undo">Undo</button></div></div>
+  <div class="grp"><div class="seg"><button id="rndSounds">Sounds</button><button id="rndSoundsPing" class="random-pp" type="button" aria-label="Sounds undo ping-pong" aria-pressed="false"></button></div><div id="kWild" class="knob"></div></div>
+  <div class="grp"><div class="seg"><button id="rndBeats">Beats</button><button id="rndBeatsPing" class="random-pp" type="button" aria-label="Beats undo ping-pong" aria-pressed="false"></button></div><div id="kDens" class="knob"></div></div>
+  <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="rndBothPing" class="random-pp" type="button" aria-label="Sounds and beats undo ping-pong" aria-pressed="false"></button></div></div>
+  <div class="grp"><button id="undo">Undo</button></div>
   <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
   <div class="spacer"></div>
   <div class="grp"><button id="evolve" aria-pressed="false">Evolution</button><div id="kEvolve" class="knob" title="Evolution and devolution speed"></div><div class="grp" style="flex-wrap:nowrap"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div></div>
   <div class="grp"><span class="cap">Voices</span><div class="seg" id="vmode"></div></div>
-</section>
-
-<section class="bar">
-  <div class="grp"><span class="cap">Export WAV</span><span>loops</span><span class="num" id="loops"></span></div>
-  <div class="grp"><div class="seg" id="xrate"></div><div class="seg" id="xbits"></div></div>
-  
-  <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
-  <div class="spacer"></div>
-  <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
 </section>
 
 <section id="seq" tabindex="0" role="region" aria-label="Step sequencer">
@@ -165,6 +159,15 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   </div>
   <div class="rows" id="rows"></div>
   </div>
+</section>
+
+<section class="bar">
+  <div class="grp"><span class="cap">Export WAV</span><span>loops</span><span class="num" id="loops"></span></div>
+  <div class="grp"><div class="seg" id="xrate"></div><div class="seg" id="xbits"></div></div>
+
+  <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
+  <div class="spacer"></div>
+  <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
 </section>
 
 <section id="editor"></section>
@@ -293,7 +296,9 @@ class FM8 extends AudioWorkletProcessor {
     this.returnTicks = null;
     this.lengthPending = null; this.lengthSeq = 0; this.lastLengthDivisor = 1;
     this.divisionPending = null; this.divisionSeq = 0; this.lastDivision = null;
-    this.pend = null; this.lastPend = null; this.randSeq = 0;
+    this.pend = null; this.lastPend = null; this.randSeq = 0; this.lastRandUndoSeq = 0;
+    this.randomChanges = Array.from({length:8}, () => ({}));
+    this.randomPing = null;
     this.decaySeq = -1; this.delayControlSeq = -1; this.delayReturn = null;
     this.transportBoundary = null;
     this.idxOut = new Array(8).fill(0);
@@ -304,6 +309,8 @@ class FM8 extends AudioWorkletProcessor {
   kill(v) { if (v.on) { v.on = false; this.cnt[v.tr]--; this.total--; } }
   recover(msg) {
     // Non-finite audio or an exception: silence everything and reset every feedback path so playback carries on.
+    if (this.randomPing) this.port.postMessage({type:'randomPingStopped',id:this.randomPing.id});
+    this.randomPing = null;
     this.killAll();
     this.dcx[0] = this.dcx[1] = this.dcy[0] = this.dcy[1] = 0;
     this.fL.fill(0); this.fR.fill(0); this.dlL.fill(0); this.dlR.fill(0);
@@ -314,6 +321,8 @@ class FM8 extends AudioWorkletProcessor {
     // A freshly loaded kit starts a new history: forget every queued change and every sequence tally.
     this.mixSeq = this.undoSeq = this.lengthSeq = this.divisionSeq = this.randSeq = 0;
     this.lastMix = this.lastUndo = this.lastPend = null; this.lastLengthDivisor = 1; this.lastDivision = null;
+    this.lastRandUndoSeq = 0; this.randomPing = null;
+    this.randomChanges = Array.from({length:8}, () => ({}));
     this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending = null; this.mixPending = {};
     this.revArm.fill(0); this.flipArm = false; this.returnTicks = null;
     this.decaySeq = -1; this.delayControlSeq = -1; this.delayReturn = null;
@@ -399,13 +408,19 @@ class FM8 extends AudioWorkletProcessor {
     const d = this.flips - (s.flipSeq || 0);
     if (d > 0 && (d & 1)) s.bpm = -s.bpm;
     // An explicit direction change mid-measure can revisit the last boundary legitimately.
-    if (this.st && this.playing && Math.sign(s.bpm) !== Math.sign(this.st.bpm) && this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) > 1e-9) this.transportBoundary = null;
-    // a queued randomization may have landed after the UI sent this state: keep it
-    if ((s.randSeq || 0) < this.randSeq && this.lastPend) this.merge(s, this.lastPend);
+    if (this.st && this.playing && Math.sign(s.bpm) !== Math.sign(this.st.bpm)) {
+      if (this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) > 1e-9) this.transportBoundary = null;
+      if (this.randomPing && this.randomPing.boundary !== null && Math.abs(this.pos-this.ev(this.randomPing.boundary)) > 1e-9) this.randomPing.boundary = null;
+    }
     if ((s.divisionSeq || 0) < this.divisionSeq) s.spb = this.lastDivision;
     if ((s.lengthSeq || 0) < this.lengthSeq) s.lengthDivisor = this.lastLengthDivisor;
     if (!s.autoReturn || (s.lengthDivisor || 1) === 1 || (this.st && s.lengthDivisor !== this.st.lengthDivisor)) this.returnTicks = null;
     if((s.undoSeq||0)<this.undoSeq && this.lastUndo){s.tracks=JSON.parse(JSON.stringify(this.lastUndo.tracks));s.lengthDivisor=this.lastUndo.lengthDivisor;}
+    // Retain every changed field across mode switches until the UI has acknowledged it.
+    // One latest value per field is bounded; Undo invalidates older random changes.
+    if ((s.randSeq || 0) < this.randSeq) this.randomChanges.forEach((changes,t) => {
+      for (const [key,change] of Object.entries(changes)) if (change.seq > (s.randSeq || 0) && change.undoSeq === this.undoSeq) s.tracks[t][key] = JSON.parse(JSON.stringify(change.value));
+    });
     if((s.mixSeq||0)<this.mixSeq && this.lastMix)this.lastMix.forEach((v,t)=>Object.assign(s.tracks[t],v));
     // Once a control lands, delayed UI snapshots must not reset the live return or its final value.
     if (this.st && this.decaySeq >= 0 && s.decaySeq <= this.decaySeq) {
@@ -418,6 +433,13 @@ class FM8 extends AudioWorkletProcessor {
   }
   merge(s, pend) {
     for (let t = 0; t < 8; t++) if (pend[t]) Object.assign(s.tracks[t], JSON.parse(JSON.stringify(pend[t])));
+  }
+  rememberRandom(tracks) {
+    this.lastPend = tracks; this.randSeq++; this.lastRandUndoSeq = this.undoSeq;
+    for (let t = 0; t < 8; t++) if (tracks[t]) {
+      const values = JSON.parse(JSON.stringify(tracks[t]));
+      for (const [key,value] of Object.entries(values)) this.randomChanges[t][key] = {seq:this.randSeq,undoSeq:this.undoSeq,value};
+    }
   }
   setGains(s) {
     for (let t = 0; t < 8; t++) {
@@ -434,6 +456,7 @@ class FM8 extends AudioWorkletProcessor {
     this.returnTicks = null;
     this.playing = true; this.pos = 0; this.nk = 0; this.pk = 0; this.fired = 0; this.flipArm = false;
     this.transportBoundary = 0; // Play the first whole measure before an automatic reversal.
+    if (this.randomPing) this.randomPing.boundary = 0;
     // per-track direction: index(k) = i0 + dir * (k - k0), wrapped to the track length
     for (let t = 0; t < 8; t++) {
       const tr = this.st.tracks[t], len = Math.max(1, Math.min(64, tr.len | 0)), rev = !!tr.rev;
@@ -452,16 +475,26 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'randomPing') {
+      if (d.mode !== 'sounds' && d.mode !== 'beats' && d.mode !== 'both') this.randomPing = null;
+      else {
+        this.pend = null; this.undoPending = null;
+        this.randomPing = {id:d.id,mode:d.mode,next:'new',tracks:d.tracks || null,baseline:null,boundary:this.playing ? null : 0};
+        // If armed exactly on a just-played boundary, wait for the next full measure.
+        if (this.playing && this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) <= 1e-9) this.randomPing.boundary = this.transportBoundary;
+      }
+    }
+    else if (d.type === 'randomPingNext') { if (this.randomPing && this.randomPing.id === d.id) this.randomPing.tracks = d.tracks || null; }
     else if (d.type === 'transportPingPong' && this.st) this.st.transportPingPong = !!d.on;
     else if (d.type === 'flipArm') this.flipArm = !!d.on;
     else if (d.type === 'revArm') this.revArm[d.t] = d.on ? 1 : 0;
     else if (d.type === 'mixPending') { const key=d.t+':'+d.key; if(d.value===null)delete this.mixPending[key];else this.mixPending[key]={t:d.t,key:d.key,value:!!d.value,id:d.id}; }
-    else if (d.type === 'undoPending') this.undoPending=d.value;
+    else if (d.type === 'undoPending') { this.undoPending=d.value; if (d.value) this.randomPing=null; }
     else if (d.type === 'stepAck') this.stepAck = true;
     else if (d.type === 'lengthDivision') this.lengthPending = d.value === null ? null : N(d.value, 1, 1, 16);
     else if (d.type === 'division') this.divisionPending = d.value === null ? null : N(d.value, 4, 0.01, 8);
-    else if (d.type === 'pending') this.pend = d.tracks || null;
+    else if (d.type === 'pending') { this.pend = d.tracks || null; if (this.pend) this.randomPing=null; }
     else if (d.type === 'trig') this.pending.push(d);
     else if (d.type === 'panic') this.killAll();
   }
@@ -713,14 +746,40 @@ class FM8 extends AudioWorkletProcessor {
       this.returnTicks=cycle*st.lengthDivisor;
     }
   }
+  applyRandomPing(k) {
+    const p = this.randomPing;
+    if (!p || !this.boundary(k) || p.boundary === k) return;
+    p.boundary = k;
+    const phase = p.next;
+    let tracks;
+    if (phase === 'new') {
+      // Random choices are prepared off the audio thread; capture the actual pre-change values here.
+      if (!p.tracks) return;
+      tracks = p.tracks; p.tracks = null;
+      p.baseline = this.st.tracks.map((tr,t) => {
+        if (!tracks[t]) return null;
+        const original = {};
+        for (const key of Object.keys(tracks[t])) original[key] = tr[key];
+        return JSON.parse(JSON.stringify(original));
+      });
+      p.next = 'undo';
+    } else {
+      tracks = p.baseline; p.next = 'new';
+    }
+    this.merge(this.st, tracks); this.setGains(this.st);
+    this.rememberRandom(tracks);
+    this.port.postMessage({type:'randomPingApplied',id:p.id,mode:p.mode,phase,seq:this.randSeq,tracks,baseline:p.baseline});
+  }
   fireStep(k) {
     if (this.delayReturn && this.boundary(k) && this.delayReturn.dir*(this.ev(k)-this.delayReturn.start) > 1e-9) this.reachDelayBoundary();
     this.recordTick(k);
     const st = this.st;
+    if (this.undoPending || this.pend) this.randomPing = null;
     if(this.undoPending){
       const cycle=this.patternCycle();
       if((((k-this.patternOrigin)%cycle)+cycle)%cycle===0){
         const u=this.undoPending;this.undoPending=null;this.lastUndo=u;this.undoSeq++;
+        this.randomChanges = Array.from({length:8}, () => ({}));
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
         this.pend=null;this.lengthPending=null;this.returnTicks=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
@@ -742,10 +801,11 @@ class FM8 extends AudioWorkletProcessor {
       if (this.boundary(k)) {
         this.merge(st, this.pend);
         this.setGains(st);
-        this.lastPend = this.pend; this.pend = null; this.randSeq++;
-        this.port.postMessage({ type: 'applied', seq: this.randSeq });
+        this.rememberRandom(this.pend); this.pend = null;
+        this.port.postMessage({ type: 'applied', seq: this.randSeq, tracks: this.lastPend });
       }
     }
+    this.applyRandomPing(k);
     const mixCycle=this.patternCycle();
     const patternBoundary=(((k-this.patternOrigin)%mixCycle)+mixCycle)%mixCycle===0;
     let ppChanged = 0;
@@ -1084,7 +1144,7 @@ async function loadWorklet(aw) {
   throw err || new Error('engine');
 }
 let audioReady = null, playCommand = 0;
-function clearTransportUI() { if(delayReturning){state.decayMultiplier=delayTarget;delayReturning=false;paintDelayControls();saveLocal();} countdownClock=null; pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
+function clearTransportUI() { stopRandomPing(); if(delayReturning){state.decayMultiplier=delayTarget;delayReturning=false;paintDelayControls();saveLocal();} countdownClock=null; pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
 function engineDied(msg) {
   const c = ctx; ctx = null; node = null; an = null; audioReady = null;
   if (c) c.close().catch(() => {});
@@ -1116,18 +1176,20 @@ function prepareAudio() {
       else if (d.type === 'undoApplied') { landUndo(d); }
       else if (d.type === 'lengthApplied') { state.lengthDivisor=d.value; state.lengthSeq=engineLengthSeq=d.seq; pendingLengthDivision=null; renderSeq(); saveLocal(); }
       else if (d.type === 'divisionApplied') { state.spb = d.value; state.divisionSeq = d.seq; pendingDivision = null; paintDivision(); renderSeq(); saveLocal(); }
-      else if (d.type === 'applied') { engineRand = d.seq; landPend(d.seq); }
+      else if (d.type === 'applied') landPend(d);
+      else if (d.type === 'randomPingApplied') landRandomPing(d);
+      else if (d.type === 'randomPingStopped' && randomPing?.id === d.id) stopRandomPing();
       else if (d.type === 'rev') { state.tracks[d.t].rev = d.rev; revArm[d.t] = false; paintRev(d.t); saveLocal(); }
       else if (d.type === 'flipped') landFlip(d);
     };
     node.onprocessorerror = () => engineDied('audio engine stopped \u2014 press Play');
     an = ctx.createAnalyser(); an.fftSize = 2048;
     node.connect(an); node.connect(ctx.destination);
-      fmtInfo(); requestAnimationFrame(frame); return true;
+      sendRandomPing(); fmtInfo(); requestAnimationFrame(frame); return true;
     } catch (e) {
       const failed = ctx; ctx = null; node = null; an = null; audioReady = null;
       if (failed) failed.close().catch(() => {});
-      $('#fmtinfo').textContent = 'audio unavailable'; return false;
+      stopRandomPing(); $('#fmtinfo').textContent = 'audio unavailable'; return false;
     }
   })();
   return audioReady;
@@ -1730,11 +1792,11 @@ function renderEditor() {
   const hear = el('div', 'grp'); hear.append(el('span', 'cap', 'Hear'));
   const hs = el('div', 'seg'); [1, 2, 3, 4].forEach(v => { const b = el('button', null, VNAMES[v]); b.onclick = () => audition(sel, v); hs.append(b); }); hear.append(hs);
   const acts = el('div', 'grp');
-  const bR = el('button', null, 'Randomize'); bR.onclick = () => { resetTrail(); pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
-  const bM = el('button', null, 'Mutate'); bM.title = 'Nudge every parameter slightly'; bM.onclick = () => { pushUndo(); mutate(tr, 0.06); renderEditor(); sync(); audition(sel, 4); };
-  const bI = el('button', null, 'Init'); bI.onclick = () => { resetTrail(); pushUndo(); const keep = { steps: tr.steps, len: tr.len, mute: tr.mute, solo: tr.solo, rev: tr.rev, pp: tr.pp, name: tr.name }; state.tracks[sel] = mkInst(Object.assign({ mx: mxOf({ '0,1': 1 }), ops: [{}, { d1: 60 }, { lvl: 0 }, { lvl: 0 }] }, keep)); renderAll(); };
+  const bR = el('button', null, 'Randomize'); bR.onclick = () => { stopRandomPing(); resetTrail(); pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
+  const bM = el('button', null, 'Mutate'); bM.title = 'Nudge every parameter slightly'; bM.onclick = () => { stopRandomPing(); pushUndo(); mutate(tr, 0.06); renderEditor(); sync(); audition(sel, 4); };
+  const bI = el('button', null, 'Init'); bI.onclick = () => { stopRandomPing(); resetTrail(); pushUndo(); const keep = { steps: tr.steps, len: tr.len, mute: tr.mute, solo: tr.solo, rev: tr.rev, pp: tr.pp, name: tr.name }; state.tracks[sel] = mkInst(Object.assign({ mx: mxOf({ '0,1': 1 }), ops: [{}, { d1: 60 }, { lvl: 0 }, { lvl: 0 }] }, keep)); renderAll(); };
   const bC = el('button', null, 'Copy'); bC.onclick = () => { clip = JSON.stringify(tr); bP.disabled = false; };
-  const bP = el('button', null, 'Paste'); bP.disabled = !clip; bP.onclick = () => { if (!clip) return; resetTrail(); pushUndo(); const src = JSON.parse(clip); src.steps = tr.steps; src.len = tr.len; src.mute = tr.mute; src.solo = tr.solo; src.rev = tr.rev; src.pp = tr.pp; state.tracks[sel] = mkInst(src); renderAll(); };
+  const bP = el('button', null, 'Paste'); bP.disabled = !clip; bP.onclick = () => { if (!clip) return; stopRandomPing(); resetTrail(); pushUndo(); const src = JSON.parse(clip); src.steps = tr.steps; src.len = tr.len; src.mute = tr.mute; src.solo = tr.solo; src.rev = tr.rev; src.pp = tr.pp; state.tracks[sel] = mkInst(src); renderAll(); };
   acts.append(bR, bM, bI, bC, bP);
   head.append(idx, nm, hear, acts);
   ed.append(head);
@@ -2044,6 +2106,7 @@ function renderAll() { renderSeq(); renderEditor(); sync(); }
 $('#play').onclick = togglePlay;
 $('#evolve').onclick = () => {
   if (evolving) { stopEvolution(true); return; }
+  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
   pushUndo();
   if (devolving) { recordTrail(); devolving = false; }
   if (!evolutionTrail.length) { trailTime = 0; recordTrail(); }
@@ -2052,6 +2115,7 @@ $('#evolve').onclick = () => {
 $('#devolve').onclick = () => {
   if (devolving) { stopEvolution(true); return; }
   if (evolutionTrail.length < 2) return;
+  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
   pushUndo(); recordTrail(); evolving = false; devolving = true;
   evolutionTime = null; evolutionMotion.clear();
   pend.sounds = null; sendPend(); paintEvolution();
@@ -2066,15 +2130,77 @@ $('#export').title = 'Capture the actual live output from the next downbeat. Cli
 // While playing, randomizing is prepared now and lands on the first step of the next loop.
 const pend = { sounds: null, beats: null };
 const TRACK_KEEP = ['steps', 'len', 'mute', 'solo', 'rev', 'pp', 'lvl', 'pan'];
-function makeSounds() {
-  return state.tracks.map(tr => {
+function makeSounds(tracks = state.tracks) {
+  return tracks.map(tr => {
     const c = JSON.parse(JSON.stringify(tr)); randomizeInst(c, wild / 100);
     TRACK_KEEP.forEach(k => delete c[k]); return c;
   });
 }
-function makeBeats(roles) {
-  return state.tracks.map((tr, t) => { const c = { role: roles ? roles[t] : tr.role, len: tr.len }; genRhythm(c, density); return c.steps; });
+function makeBeats(roles, tracks = state.tracks) {
+  return tracks.map((tr, t) => { const c = { role: roles ? roles[t] : tr.role, len: tr.len }; genRhythm(c, density); return c.steps; });
 }
+// Each mode has its own scoped restore patch; the regular Undo history stays independent.
+let randomPing = null, randomPingCounter = 0, randomPingMinimumId = 0;
+const RANDOM_PING_BUTTONS = { sounds: '#rndSoundsPing', beats: '#rndBeatsPing', both: '#rndBothPing' };
+function paintRandomPing() {
+  for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
+    const b = $(id), on = randomPing?.mode === mode;
+    b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    const name = mode === 'both' ? 'Sounds and beats' : mode === 'sounds' ? 'Sounds' : 'Beats';
+    b.title = name + ': alternate a fresh randomization and undo each measure. One mode at a time; switch off to keep the current result.' +
+      (on ? ' Next measure: ' + (randomPing.next === 'undo' ? 'undo.' : 'new variation.') : ' Starts at the next measure while playing.');
+  }
+}
+function makeRandomPingTracks() {
+  if (!randomPing) return null;
+  const tracks = JSON.parse(JSON.stringify(state.tracks));
+  // Prepare every new variation from the pre-change sound, even while the variation is audible.
+  if (randomPing.next === 'undo' && randomPing.baseline) randomPing.baseline.forEach((p, t) => Object.assign(tracks[t], p));
+  const sounds = randomPing.mode === 'beats' ? null : makeSounds(tracks);
+  const beats = randomPing.mode === 'sounds' ? null : makeBeats(sounds && sounds.map(p => p.role), tracks);
+  return tracks.map((_, t) => Object.assign({}, sounds ? sounds[t] : {}, beats ? { steps: beats[t] } : {}));
+}
+function sendRandomPing() {
+  if (node && randomPing) node.port.postMessage({ type: 'randomPing', id: randomPing.id, mode: randomPing.mode, tracks: makeRandomPingTracks() });
+}
+function refreshRandomPing() {
+  if (node && randomPing) node.port.postMessage({ type: 'randomPingNext', id: randomPing.id, tracks: makeRandomPingTracks() });
+}
+function stopRandomPing() {
+  if (!randomPing) return;
+  const id = randomPing.id; randomPing = null;
+  if (node) node.port.postMessage({ type: 'randomPing', id, mode: null });
+  paintRandomPing();
+}
+function toggleRandomPing(mode) {
+  const wasOn = randomPing?.mode === mode;
+  stopRandomPing();
+  if (wasOn) return;
+  clearPend();
+  pendingUndo = null; if (node) node.port.postMessage({ type: 'undoPending', value: null });
+  if (mode !== 'beats') resetTrail();
+  pushUndo(); paintUndo();
+  randomPing = { id: ++randomPingCounter, mode, next: 'new', baseline: null };
+  if (node) node.port.postMessage({ type: 'state', state });
+  sendRandomPing(); paintRandomPing();
+}
+function landRandomPing(d) {
+  // A late acknowledgement still describes what was heard, even if its toggle was just switched off.
+  if (d.id < randomPingMinimumId || !Number.isSafeInteger(d.seq) || d.seq <= engineRand) return;
+  engineRand = state.randSeq = d.seq;
+  d.tracks.forEach((p, t) => Object.assign(state.tracks[t], JSON.parse(JSON.stringify(p))));
+  if (randomPing?.id === d.id) {
+    randomPing.baseline = d.baseline; randomPing.next = d.phase === 'new' ? 'undo' : 'new';
+    refreshRandomPing(); paintRandomPing();
+  }
+  renderSeq(); if (d.mode !== 'beats') renderEditor(); saveLocal();
+  pulseButton($(d.mode === 'sounds' ? '#rndSounds' : d.mode === 'beats' ? '#rndBeats' : '#rndBoth'));
+}
+for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
+  $(id).innerHTML = PP_ICON;
+  $(id).onclick = () => toggleRandomPing(mode);
+}
+paintRandomPing();
 function paintRnd() {
   const s = !!pend.sounds, b = !!pend.beats;
   [['#rndSounds', s], ['#rndBeats', b], ['#rndBoth', s && b]].forEach(([id, on]) => { $(id).classList.remove('on'); $(id).classList.toggle('queued', on); $(id).setAttribute('aria-busy', on); $(id).setAttribute('aria-pressed', false); });
@@ -2087,28 +2213,29 @@ function sendPend() {
   node.port.postMessage({ type: 'state', state });
   node.port.postMessage({ type: 'pending', tracks });
 }
-function landPend(seq) {
-  const doneSounds = !!pend.sounds, doneBeats = !!pend.beats;
-  if (pend.sounds) resetTrail();
+function landPend(d) {
+  if (!Number.isSafeInteger(d.seq) || d.seq <= engineRand) return;
+  const doneSounds = d.tracks.some(p => Object.keys(p).some(k => k !== 'steps')), doneBeats = d.tracks.some(p => 'steps' in p);
+  if (doneSounds) resetTrail();
   pushUndo();
-  state.tracks.forEach((tr, t) => {
-    if (pend.sounds) Object.assign(tr, JSON.parse(JSON.stringify(pend.sounds[t])));
-    if (pend.beats) tr.steps = pend.beats[t].slice();
-  });
-  state.randSeq = seq;
+  d.tracks.forEach((p, t) => Object.assign(state.tracks[t], JSON.parse(JSON.stringify(p))));
+  engineRand = state.randSeq = d.seq;
   pend.sounds = pend.beats = null; paintRnd(); renderAll();
   if (doneSounds) pulseButton($('#rndSounds')); if (doneBeats) pulseButton($('#rndBeats')); if (doneSounds && doneBeats) pulseButton($('#rndBoth'));
 }
 function clearPend() { pend.sounds = pend.beats = null; if (node) node.port.postMessage({ type: 'pending', tracks: null }); paintRnd(); }
 $('#rndSounds').onclick = () => {
+  stopRandomPing();
   if (!(playing && node)) { resetTrail(); pushUndo(); state.tracks.forEach(t => randomizeInst(t, wild / 100)); renderAll(); return; }
   pend.sounds = pend.sounds ? null : makeSounds(); sendPend();
 };
 $('#rndBeats').onclick = () => {
+  stopRandomPing();
   if (!(playing && node)) { pushUndo(); state.tracks.forEach(t => genRhythm(t, density)); renderAll(); return; }
   pend.beats = pend.beats ? null : makeBeats(pend.sounds && pend.sounds.map(p => p.role)); sendPend();
 };
 $('#rndBoth').onclick = () => {
+  stopRandomPing();
   if (!(playing && node)) { resetTrail(); pushUndo(); state.tracks.forEach(t => { randomizeInst(t, wild / 100); genRhythm(t, density); }); renderAll(); return; }
   if (pend.sounds && pend.beats) { pend.sounds = pend.beats = null; }
   else { if (!pend.sounds) pend.sounds = makeSounds(); if (!pend.beats) pend.beats = makeBeats(pend.sounds.map(p => p.role)); }
@@ -2125,6 +2252,7 @@ function landUndo(d){
 paintUndo();
 $('#undo').title='While playing, undo at the next pattern boundary. Press again to cancel.';
 $('#undo').onclick=()=>{
+  stopRandomPing();
   if(pendingUndo){pendingUndo=null;if(node)node.port.postMessage({type:'undoPending',value:null});paintUndo();return;}
   const index=undoStack.length-1;if(index<0)return;
   const o=normalize(JSON.parse(undoStack[index]));
@@ -2137,9 +2265,9 @@ function renderVMode() {
   $('#vmode').title = 'All cut: any new step cuts everything still ringing (same-step hits play together). All poly: every hit rings out fully, no chokes. Per track: each track\'s own Cut/Poly and choke group.';
 }
 const effCut = tr => state.voiceMode === 'track' ? tr.cut : state.voiceMode === 'cut';
-$('#clear').onclick = () => { pushUndo(); state.tracks.forEach(t => t.steps.fill(0)); renderAll(); };
-knob($('#kWild'), 'Wild', () => wild, v => wild = v, v => v + '%');
-knob($('#kDens'), 'Density', () => density, v => density = v, v => v + '%');
+$('#clear').onclick = () => { stopRandomPing(); pushUndo(); state.tracks.forEach(t => t.steps.fill(0)); renderAll(); };
+knob($('#kWild'), 'Wild', () => wild, v => { wild = v; refreshRandomPing(); }, v => v + '%');
+knob($('#kDens'), 'Density', () => density, v => { density = v; refreshRandomPing(); }, v => v + '%');
 function paintDelayControls() {
   $('#kShortenDelay')._upd?.();
   $('#delayAutoReturn').classList.toggle('on', state.decayAutoReturn);
@@ -2372,6 +2500,7 @@ $('#kitFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
     const s = normalize(JSON.parse(await f.text()));
+    stopRandomPing(); randomPingMinimumId = ++randomPingCounter;
     pushUndo(); resetTrail();
     pendingMix = {}; pendingUndo = null; pendingDivision = null; pendingLengthDivision = null; revArm.fill(false);
     state = s;
