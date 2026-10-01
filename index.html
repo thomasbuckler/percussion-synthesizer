@@ -171,7 +171,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
   <div class="spacer"></div>
   <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
-  <div class="grp"><div class="seg"><button id="saveAll" title="Save every sound, pattern, global control, automation setting, and WAV option.">Save All</button><button id="loadAll" title="Restore a full save, paused and ready to Play.">Load All</button></div><input type="file" id="sessionFile" accept=".json,application/json" hidden></div>
+  <div class="grp"><div class="seg"><button id="saveAll" title="Save every sound, pattern, global control, automation setting, and WAV option.">Save All Parameters</button><button id="loadAll" title="Restore a full save, paused and ready to Play.">Load All</button></div><input type="file" id="sessionFile" accept=".json,application/json" hidden></div>
 </section>
 
 <section id="editor"></section>
@@ -2769,7 +2769,7 @@ function validateSession(file) {
     return t;
   };
   object(file);
-  if (file.format !== SESSION_FORMAT) throw new Error('Choose a Save All file. Use Kit Load for kit files.');
+  if (file.format !== SESSION_FORMAT) throw new Error('Choose a Save All Parameters file. Use Kit Load for kit files.');
   if (file.version !== 1) throw new Error('This full-save version is not supported.');
   const s = object(file.state), c = object(file.controls), e = object(file.evolution), w = object(file.wav);
   const st = Object.assign({}, DEFAULTS, {
@@ -2852,11 +2852,11 @@ $('#saveAll').onclick = async () => {
   const button = $('#saveAll'); button.disabled = true;
   try {
     const snapshot = captureSession();
-    validateSession(snapshot); // A file offered by Save All must also be loadable.
+    validateSession(snapshot); // A file offered by Save All Parameters must also be loadable.
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const r = await offerFile('percussion-synth-all_' + stamp + '.json', new Blob([JSON.stringify(snapshot)], {type: 'application/json'}));
     $('#xstat').textContent = r === 'saved' ? 'all settings saved' : r === 'declined' ? 'save declined' : '';
-  } catch (err) { $('#xstat').textContent = 'Save All failed: ' + err.message; }
+  } catch (err) { $('#xstat').textContent = 'Save All Parameters failed: ' + err.message; }
   finally { button.disabled = false; }
 };
 $('#loadAll').onclick = () => $('#sessionFile').click();
