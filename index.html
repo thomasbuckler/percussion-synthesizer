@@ -43,7 +43,7 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .status{min-width:12ch}
 
 /* line slider */
-.p{display:grid;grid-template-columns:1fr auto;column-gap:8px;cursor:ew-resize;user-select:none;-webkit-user-select:none;touch-action:none;padding-block:3px 1px;min-width:0}
+.p{display:grid;grid-template-columns:1fr auto;column-gap:8px;cursor:ew-resize;user-select:none;-webkit-user-select:none;touch-action:pan-y pinch-zoom;padding-block:3px 1px;min-width:0}
 .p .l{text-transform:uppercase;letter-spacing:.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .p .v{font-variant-numeric:tabular-nums;cursor:text;white-space:nowrap}
 .p .v input{width:8ch;text-align:right;padding:0}
@@ -106,7 +106,7 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
 .mx{display:grid;grid-template-columns:auto repeat(4,1fr) 12px 1fr;gap:4px;align-items:stretch}
 .mx .hd{text-align:center;letter-spacing:.1em;padding-block:2px}
 .mx .rh{padding-right:6px;align-self:center;letter-spacing:.1em}
-.mc{border:1px dotted var(--fg);height:30px;position:relative;cursor:ns-resize;user-select:none;-webkit-user-select:none;touch-action:none;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.mc{border:1px dotted var(--fg);height:30px;position:relative;cursor:ns-resize;user-select:none;-webkit-user-select:none;touch-action:pan-y pinch-zoom;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
 .mc.nz{border-style:solid}
 .mc.fb::before{content:"fb";position:absolute;left:3px;top:1px;font-size:9px;letter-spacing:.05em}
 .mc b{position:absolute;left:0;bottom:0;height:1px;background:var(--fg)}
@@ -1261,6 +1261,57 @@ async function togglePlay() {
 }
 
 /* ---------- UI primitives ---------- */
+let cancelParameterDrag = null;
+document.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch' && e.isPrimary === false) cancelParameterDrag?.();
+}, true);
+window.addEventListener('blur', () => cancelParameterDrag?.());
+function parameterDrag(host, start, move, ignore = () => false) {
+  let gesture = null, suppressDoubleClickUntil = 0;
+  const finish = e => {
+    if (!gesture || (e && e.pointerId !== gesture.id)) return;
+    const g = gesture; gesture = null;
+    if (g.touch && (g.moved || e?.type === 'pointercancel')) suppressDoubleClickUntil = performance.now() + 500;
+    if (cancelParameterDrag === finish) cancelParameterDrag = null;
+    if (host.hasPointerCapture(g.id)) host.releasePointerCapture(g.id);
+  };
+  const grab = e => {
+    gesture.active = true;
+    start(e, gesture.touch);
+    host.setPointerCapture(e.pointerId);
+    host.focus({preventScroll:true});
+    e.preventDefault();
+  };
+  host.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.isPrimary === false || ignore(e)) return;
+    cancelParameterDrag?.();
+    gesture = {id:e.pointerId, x:e.clientX, y:e.clientY, touch:e.pointerType === 'touch', active:false, moved:false};
+    cancelParameterDrag = finish;
+    // A finger can scroll naturally; editing starts only after a deliberate sideways drag.
+    if (!gesture.touch) grab(e);
+  });
+  host.addEventListener('pointermove', e => {
+    const g = gesture;
+    if (!g || e.pointerId !== g.id) return;
+    if (!host.isConnected) { finish(e); return; }
+    if (!g.active) {
+      const dx = e.clientX-g.x, dy = e.clientY-g.y;
+      if (Math.hypot(dx, dy) < 12) return;
+      g.moved = true;
+      if (Math.abs(dx) < 12 || Math.abs(dx) <= Math.abs(dy)*1.5) { finish(e); return; }
+      // Rebase at the threshold so grabbing a control never jumps its value.
+      grab(e); return;
+    }
+    if (g.touch) { g.moved = true; e.preventDefault(); }
+    move(e, g.touch);
+  });
+  host.addEventListener('pointerup', finish);
+  host.addEventListener('pointercancel', finish);
+  host.addEventListener('lostpointercapture', e => { if (e.target === host) finish(e); });
+  host.addEventListener('dblclick', e => {
+    if (performance.now() < suppressDoubleClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+}
 function slider(spec, obj, key, onChange, host) {
   const root = host || el('div', 'p');
   root.classList.add('p'); root.tabIndex = 0;
@@ -1282,21 +1333,15 @@ function slider(spec, obj, key, onChange, host) {
     if (val === obj[key]) return;
     obj[key] = val; upd(); onChange && onChange(key, val); sync();
   };
-  let sx = 0, sy = 0, sn = 0, drag = false;
-  root.addEventListener('pointerdown', e => {
-    if (e.target.tagName === 'INPUT' || v.contains(e.target)) return;
-    drag = true; sx = e.clientX; sy = e.clientY; sn = toNorm(spec, obj[key]);
-    root.setPointerCapture(e.pointerId); e.preventDefault(); root.focus();
-  });
-  root.addEventListener('pointermove', e => {
-    if (!drag) return;
-    const d = (e.clientX - sx) - (e.clientY - sy);
+  let sx = 0, sy = 0, sn = 0;
+  parameterDrag(root, e => {
+    sx = e.clientX; sy = e.clientY; sn = toNorm(spec, obj[key]);
+  }, (e, touch) => {
+    const d = (e.clientX - sx) - (touch ? 0 : e.clientY - sy);
     const w = e.shiftKey ? 1800 : Math.max(120, t.clientWidth * 1.4);
     if (e.shiftKey) { sx = e.clientX; sy = e.clientY; sn = clamp(sn + d / w, 0, 1); set(toVal(spec, sn)); }
     else set(toVal(spec, sn + d / w));
-  });
-  const end = () => { drag = false; };
-  root.addEventListener('pointerup', end); root.addEventListener('pointercancel', end);
+  }, e => e.target.tagName === 'INPUT' || v.contains(e.target));
   root.addEventListener('dblclick', e => {
     if (e.target === v || v.contains(e.target)) return;
     set(spec.d != null ? spec.d : spec.min);
@@ -1710,10 +1755,9 @@ function mxCell(get, set, max, fmt, fb) {
   const toN = max === 12 ? mxNorm : v => v / max, toV = max === 12 ? mxVal : n => n * max;
   const upd = () => { const v = get(); t.textContent = v > 0.0005 ? fmt(v) : '\u00b7'; c.classList.toggle('nz', v > 0.0005); b.style.width = (toN(v) * 100) + '%'; c.setAttribute('aria-valuetext', fmt(v)); };
   const put = v => { set(clamp(v, 0, max)); upd(); sync(); };
-  let drag = false, sy = 0, sn = 0;
-  c.addEventListener('pointerdown', e => { drag = true; sy = e.clientY; sn = toN(get()); c.setPointerCapture(e.pointerId); e.preventDefault(); c.focus(); });
-  c.addEventListener('pointermove', e => { if (drag) put(toV(clamp(sn + (sy - e.clientY) / (e.shiftKey ? 1500 : 160), 0, 1))); });
-  c.addEventListener('pointerup', () => drag = false);
+  let sx = 0, sy = 0, sn = 0;
+  parameterDrag(c, e => { sx = e.clientX; sy = e.clientY; sn = toN(get()); },
+    (e, touch) => put(toV(clamp(sn + (touch ? e.clientX - sx : sy - e.clientY) / (e.shiftKey ? 1500 : 160), 0, 1))));
   c.addEventListener('dblclick', () => put(get() > 0 ? 0 : (max === 12 ? 1.5 : 0.7)));
   c.addEventListener('keydown', e => {
     const s = e.shiftKey ? 0.002 : 0.02;
@@ -1846,7 +1890,7 @@ function renderEditor() {
   const algs = el('div', 'algs');
   ALGS.forEach(a => { const b = el('button', null, a.n); b.title = 'Load routing ' + a.n; b.onclick = () => { applyAlg(tr, a); mxCells.forEach(c => c._upd()); renderEditor(); sync(); }; algs.append(b); });
   ms.append(algs);
-  ms.append(el('p', 'note', 'Drag a cell up or down (shift for fine). Values are modulation index in radians; the diagonal is operator self-feedback \u2014 push it past ~2 for FM noise. Double-click toggles a connection.'));
+  ms.append(el('p', 'note', 'Mouse: drag a cell up or down (shift for fine). Touch: drag left or right to adjust; swipe vertically to scroll. Values are modulation index in radians; the diagonal is operator self-feedback \u2014 push it past ~2 for FM noise. Double-click toggles a connection.'));
   top.append(vs, ms);
   ed.append(top);
 
@@ -1954,7 +1998,8 @@ function mutate(tr, amt) {
 }
 const ROLE_DENS = { kick: 0.75, snare: 0.5, hat: 1.55, ohat: 0.55, tom: 0.45, clap: 0.45, rim: 0.7, bell: 0.5, zap: 0.45, metal: 0.6, perc: 0.8, noise: 0.8 };
 function genRhythm(tr, dens) {
-  const d = dens / 100, len = tr.len / (state.lengthDivisor || 1), rf = ROLE_DENS[tr.role] || 0.8;
+  // Divisors shorten playback temporarily; keep a complete pattern ready for the return.
+  const d = dens / 100, len = tr.len, rf = ROLE_DENS[tr.role] || 0.8;
   const beat = state.spb;
   const st = new Array(64).fill(0);
   for (let i = 0; i < len; i++) {
