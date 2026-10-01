@@ -171,6 +171,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
   <div class="spacer"></div>
   <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
+  <div class="grp"><div class="seg"><button id="saveAll" title="Save every sound, pattern, global control, automation setting, and WAV option.">Save All</button><button id="loadAll" title="Restore a full save, paused and ready to Play.">Load All</button></div><input type="file" id="sessionFile" accept=".json,application/json" hidden></div>
 </section>
 
 <section id="editor"></section>
@@ -515,7 +516,13 @@ class FM8 extends AudioWorkletProcessor {
     }
     else if (d.type === 'recordCancel') this.recording = null;
     else if (d.type === 'state') this.setState(d.state);
-    else if (d.type === 'loadKit') { this.failRecording('Recording cancelled: kit changed.'); this.resetSync(); this.setState(d.state); if (this.playing) this.start(); this.reportDelay(); }
+    else if (d.type === 'loadKit') {
+      this.failRecording('Recording cancelled: kit changed.');
+      if (d.sessionId) { this.playing = false; this.flips = 0; this.killAll(); this.pending.length = 0; }
+      this.resetSync(); this.setState(d.state); if (this.playing) this.start();
+      if (d.sessionId) this.port.postMessage({type:'sessionLoaded',id:d.sessionId});
+      this.reportDelay();
+    }
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
@@ -524,7 +531,7 @@ class FM8 extends AudioWorkletProcessor {
       if (d.mode !== 'sounds' && d.mode !== 'beats' && d.mode !== 'both') this.randomPing = null;
       else {
         this.pend = null; this.undoPending = null;
-        this.randomPing = {id:d.id,mode:d.mode,next:'new',tracks:d.tracks || null,baseline:null,boundary:this.playing ? null : 0};
+        this.randomPing = {id:d.id,mode:d.mode,next:d.next === 'undo' && d.baseline ? 'undo' : 'new',tracks:d.tracks || null,baseline:d.baseline || null,boundary:this.playing ? null : 0};
         // If armed exactly on a just-played boundary, wait for the next full measure.
         if (this.playing && this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) <= 1e-9) this.randomPing.boundary = this.transportBoundary;
       }
@@ -1150,6 +1157,7 @@ let delayReturning = false, delayHolding = false, delayTarget = 1, delayUiPaint 
 let sel = 0, wild = 35, density = 45, clip = null;
 const xp = { loops: 4, rate: 0, bits: 32 };
 const undoStack = [];
+let sessionLoadCounter = 0, sessionLoading = 0;
 
 function loadLocal() {
   try {
@@ -1208,6 +1216,7 @@ let audioReady = null, playCommand = 0;
 function clearTransportUI() { stopRandomPing(); if(delayReturning){state.decayMultiplier=delayTarget;delayReturning=false;paintDelayControls();saveLocal();} countdownClock=null; pendingMix={};paintMix(); pendingUndo=null; paintUndo(); pendingLengthDivision=null; paintLengthDivision(); pendingDivision = null; paintDivision(); stepQ.length = 0; clearPlayheads(); flipArmed = false; paintFlip(); revArm.fill(false); for (let i = 0; i < 8; i++) paintRev(i); clearPend(); }
 function engineDied(msg) {
   cancelLiveExport('Recording interrupted: audio engine stopped.');
+  sessionLoading = 0;
   const c = ctx; ctx = null; node = null; an = null; audioReady = null;
   if (c) c.close().catch(() => {});
   playing = false; $('#play').textContent = 'Play'; $('#play').classList.remove('on'); paintEvolution();
@@ -1231,6 +1240,11 @@ function prepareAudio() {
     node.port.onmessage = e => {
       if(node!==activeNode || ctx!==activeContext)return;
       const d = e.data;
+      // Discard acknowledgements from the previous setup until the load reaches the audio thread.
+      if (sessionLoading) {
+        if (d.type === 'sessionLoaded' && d.id === sessionLoading) sessionLoading = 0;
+        else { if (d.type === 'step') node.port.postMessage({type:'stepAck'}); return; }
+      }
       if (d.type.startsWith('record')) handleRecording(d);
       else if (d.type === 'step') { node.port.postMessage({type:'stepAck'}); if (!document.hidden) { stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate }); if (stepQ.length > 512) stepQ.splice(0, stepQ.length - 128); } }
       else if (d.type === 'clk') { countdownClock={remaining:d.remaining,time:d.time}; evolveTick(performance.now()); }
@@ -2282,7 +2296,7 @@ function makeRandomPingTracks() {
   return tracks.map((_, t) => Object.assign({}, sounds ? sounds[t] : {}, beats ? { steps: beats[t] } : {}));
 }
 function sendRandomPing() {
-  if (node && randomPing) node.port.postMessage({ type: 'randomPing', id: randomPing.id, mode: randomPing.mode, tracks: makeRandomPingTracks() });
+  if (node && randomPing) node.port.postMessage({ type: 'randomPing', id: randomPing.id, mode: randomPing.mode, next: randomPing.next, baseline: randomPing.baseline, tracks: makeRandomPingTracks() });
 }
 function refreshRandomPing() {
   if (node && randomPing) node.port.postMessage({ type: 'randomPingNext', id: randomPing.id, tracks: makeRandomPingTracks() });
@@ -2710,6 +2724,154 @@ $('#kitFile').onchange = async e => {
   }
   catch (err) { $('#xstat').textContent = 'not a kit file'; }
   e.target.value = '';
+};
+
+/* ---------- full setup files ---------- */
+const SESSION_FORMAT = 'percussion-synthesizer-session';
+const SESSION_GLOBALS = ['bpm', 'bpmSnap', 'swing', 'spb', 'master', 'os', 'voiceMode',
+  'autoReturn', 'lengthDivisor', 'transportPingPong', 'randomPingDivisorHold', 'decayMultiplier', 'decayAutoReturn'];
+const copyJSON = value => JSON.parse(JSON.stringify(value));
+function captureSession() {
+  // Include the current point, so Devolution can still retrace the saved route.
+  if (evolving || devolving) recordTrail();
+  return {
+    format: SESSION_FORMAT, version: 1,
+    state: Object.assign(Object.fromEntries(SESSION_GLOBALS.map(k => [k, state[k]])), {tracks: copyJSON(state.tracks)}),
+    controls: {wild, density, selectedTrack: sel},
+    evolution: {speed: evolutionSpeed, multiplier: evolutionMultiplier,
+      mode: devolving ? 'devolve' : evolving ? 'evolve' : 'off', time: trailTime, trail: copyJSON(evolutionTrail)},
+    randomPing: randomPing ? {mode: randomPing.mode, next: randomPing.next, baseline: copyJSON(randomPing.baseline)} : null,
+    wav: {...xp}
+  };
+}
+function validateSession(file) {
+  // Construct a clean replacement before touching the live setup. Do not merge arbitrary file keys.
+  const fail = () => { throw new Error('Invalid full-save file.'); };
+  const object = v => { if (!v || typeof v !== 'object' || Array.isArray(v)) fail(); return v; };
+  const number = (v, min, max, integer = false) => {
+    if (!Number.isFinite(v) || v < min - 1e-9 || v > max + 1e-9 || (integer && !Number.isInteger(v))) fail();
+    return v;
+  };
+  const bool = v => { if (typeof v !== 'boolean') fail(); return v; };
+  const choice = (v, values) => { if (!values.includes(v)) fail(); return v; };
+  const string = v => { if (typeof v !== 'string' || v.length > 1024) fail(); return v; };
+  const array = (v, length) => { if (!Array.isArray(v) || v.length !== length) fail(); return v; };
+  const params = (v, specs) => Object.fromEntries(specs.map(s => [s.k, number(v[s.k], s.min, s.max, !!s.int)]));
+  const track = value => {
+    const v = object(value), t = params(v, INST_SPEC);
+    t.name = string(v.name); t.role = string(v.role);
+    for (const k of ['cut', 'mute', 'solo', 'rev', 'pp']) t[k] = bool(v[k]);
+    t.len = number(v.len, 1, 64, true);
+    t.steps = array(v.steps, 64).map(n => number(n, 0, 4, true));
+    t.mx = array(v.mx, 4).map(row => array(row, 4).map(n => number(n, 0, 12)));
+    t.out = array(v.out, 4).map(n => number(n, 0, 1));
+    t.ops = array(v.ops, 4).map(op => Object.assign(params(object(op), OP_SPEC), {fixed: bool(op.fixed)}));
+    return t;
+  };
+  object(file);
+  if (file.format !== SESSION_FORMAT) throw new Error('Choose a Save All file. Use Kit Load for kit files.');
+  if (file.version !== 1) throw new Error('This full-save version is not supported.');
+  const s = object(file.state), c = object(file.controls), e = object(file.evolution), w = object(file.wav);
+  const st = Object.assign({}, DEFAULTS, {
+    bpm: number(s.bpm, -999, 999), bpmSnap: bool(s.bpmSnap), swing: number(s.swing, 0, 1),
+    spb: choice(s.spb, [0.5, 1, 2, 4, 8]), master: number(s.master, 0, 1.5),
+    os: choice(s.os, [1, 2, 4]), voiceMode: choice(s.voiceMode, ['track', 'cut', 'poly']),
+    lengthDivisor: choice(s.lengthDivisor, [1, 2, 3, 4, 8, 16]),
+    decayMultiplier: number(s.decayMultiplier, 0.1, 1), tracks: array(s.tracks, 8).map(track)
+  });
+  for (const k of ['autoReturn', 'transportPingPong', 'randomPingDivisorHold', 'decayAutoReturn']) st[k] = bool(s[k]);
+  const controls = {wild: number(c.wild, 0, 100), density: number(c.density, 0, 100), selectedTrack: number(c.selectedTrack, 0, 7, true)};
+  const wav = {loops: number(w.loops, 1, 64, true), rate: choice(w.rate, [0, 44100, 48000, 96000, '4x']), bits: choice(w.bits, [16, 24, 32])};
+  // Match captureTimbre's fixed field order, without replacing the live kit to inspect it.
+  const fieldSpecs = Array.from({length: 8}, () => [
+    ...['decS', 'idx', 'drive'].map(k => INST_BY[k]),
+    ...Array.from({length: 4}, () => ['a', 'h', 'd1', 'brk', 'd2', 'curve'].map(k => OP_BY[k])).flat(),
+    ...Array.from({length: 16}, () => ({min: 0, max: 12}))
+  ]).flat();
+  if (!Array.isArray(e.trail) || e.trail.length > 8000) fail();
+  const evolution = {speed: number(e.speed, 0, 100), multiplier: choice(e.multiplier, [1, 10]),
+    mode: choice(e.mode, ['off', 'evolve', 'devolve']), time: number(e.time, 0, Number.MAX_SAFE_INTEGER), trail: []};
+  let lastTime = -1;
+  evolution.trail = e.trail.map(point => {
+    object(point); const t = number(point.t, 0, Number.MAX_SAFE_INTEGER);
+    if (t <= lastTime) fail(); lastTime = t;
+    return {t, values: array(point.values, fieldSpecs.length).map((v, i) => number(v, fieldSpecs[i].min, fieldSpecs[i].max))};
+  });
+  if (evolution.trail.length && (evolution.trail[0].t !== 0 || evolution.time > lastTime)) fail();
+  if (evolution.mode === 'devolve' && (evolution.trail.length < 2 || evolution.time <= 0)) fail();
+  if (evolution.mode === 'evolve' && !evolution.trail.length) fail();
+  let ping = null;
+  if (file.randomPing !== null) {
+    const p = object(file.randomPing);
+    ping = {mode: choice(p.mode, ['sounds', 'beats', 'both']), next: choice(p.next, ['new', 'undo']), baseline: null};
+    if (p.baseline !== null) {
+      const allowed = Object.keys(st.tracks[0]).filter(k => ping.mode === 'beats' ? k === 'steps' :
+        !TRACK_KEEP.includes(k) || (ping.mode === 'both' && k === 'steps'));
+      ping.baseline = array(p.baseline, 8).map((patch, i) => {
+        object(patch);
+        if (Object.keys(patch).length !== allowed.length || allowed.some(k => !Object.hasOwn(patch, k))) fail();
+        const restored = track(Object.assign({}, st.tracks[i], patch));
+        return Object.fromEntries(allowed.map(k => [k, restored[k]]));
+      });
+    }
+    if (ping.next === 'undo' && !ping.baseline) fail();
+    if (ping.mode !== 'beats' && evolution.mode !== 'off') fail();
+  }
+  return {state: st, controls, wav, evolution, randomPing: ping};
+}
+function restoreSession(saved) {
+  // Playback and in-flight actions are not presets. Resume the restored settings with Play.
+  ++playCommand; playing = false;
+  cancelLiveExport('Recording cancelled: full save loaded.');
+  cancelParameterDrag?.();
+  for (const id of ['#kWild', '#kDens', '#kEvolve', '#kShortenDelay']) $(id)._cancelGesture?.();
+  evolving = devolving = false; evolutionTime = null; evolutionTouch = false; evolutionMotion.clear();
+  delayReturning = delayHolding = false; delayTarget = 1;
+  clearTransportUI();
+  randomPingMinimumId = ++randomPingCounter;
+  state = saved.state;
+  state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = state.flipSeq = state.decaySeq = 0;
+  engineMixSeq = engineLengthSeq = engineRand = engineFlips = 0;
+  wild = saved.controls.wild; density = saved.controls.density; sel = saved.controls.selectedTrack;
+  Object.assign(xp, saved.wav);
+  evolutionSpeed = saved.evolution.speed; evolutionMultiplier = saved.evolution.multiplier;
+  evolutionTrail = saved.evolution.trail; trailTime = saved.evolution.time; trailSample = 0;
+  evolving = saved.evolution.mode === 'evolve'; devolving = saved.evolution.mode === 'devolve';
+  fieldCache = fieldRefs = null;
+  randomPing = saved.randomPing ? Object.assign({id: ++randomPingCounter}, saved.randomPing) : null;
+  undoStack.length = 0; clip = null;
+  sessionLoading = node ? ++sessionLoadCounter : 0;
+  if (node) node.port.postMessage({type: 'loadKit', state, sessionId: sessionLoading});
+  sendRandomPing();
+  $('#play').textContent = 'Play'; $('#play').classList.remove('on');
+  renderHeader(); renderVMode(); renderAll(); paintEvolution(); paintRandomPing(); paintUndo();
+  for (const id of ['#kWild', '#kDens', '#kEvolve', '#loops', '#xbits']) $(id)._upd?.();
+  fmtInfo(); paintCountdowns();
+}
+$('#saveAll').onclick = async () => {
+  const button = $('#saveAll'); button.disabled = true;
+  try {
+    const snapshot = captureSession();
+    validateSession(snapshot); // A file offered by Save All must also be loadable.
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const r = await offerFile('percussion-synth-all_' + stamp + '.json', new Blob([JSON.stringify(snapshot)], {type: 'application/json'}));
+    $('#xstat').textContent = r === 'saved' ? 'all settings saved' : r === 'declined' ? 'save declined' : '';
+  } catch (err) { $('#xstat').textContent = 'Save All failed: ' + err.message; }
+  finally { button.disabled = false; }
+};
+$('#loadAll').onclick = () => $('#sessionFile').click();
+let sessionFileRequest = 0;
+$('#sessionFile').onchange = async e => {
+  const input = e.target, file = input.files[0]; if (!file) return;
+  const request = ++sessionFileRequest;
+  try {
+    if (file.size > 128 * 1024 * 1024) throw new Error('Full-save file is too large.');
+    const saved = validateSession(JSON.parse(await file.text()));
+    if (request !== sessionFileRequest) return;
+    restoreSession(saved);
+    $('#xstat').textContent = 'all settings loaded — press Play';
+  } catch (err) { if (request === sessionFileRequest) $('#xstat').textContent = 'Load All failed: ' + err.message; }
+  finally { if (request === sessionFileRequest) input.value = ''; }
 };
 
 /* ---------- boot ---------- */
