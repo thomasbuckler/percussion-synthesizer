@@ -143,7 +143,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><button id="rndSounds">Sounds</button><div id="kWild" class="knob"></div></div>
   <div class="grp"><button id="rndBeats">Beats</button><div id="kDens" class="knob"></div></div>
   <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="undo">Undo</button></div></div>
-  <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Delay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Delay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Delay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
+  <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
   <div class="spacer"></div>
   <div class="grp"><button id="evolve" aria-pressed="false">Evolution</button><div id="kEvolve" class="knob" title="Evolution and devolution speed"></div><div class="grp" style="flex-wrap:nowrap"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div></div>
   <div class="grp"><span class="cap">Voices</span><div class="seg" id="vmode"></div></div>
@@ -2168,7 +2168,7 @@ function handleDelayStatus(d) {
   if (!delayReturning || now - delayUiPaint > 50) { for (let i = 0; i < 4; i++) drawEnv(i); delayUiPaint = now; }
   if (!delayReturning) saveLocal();
 }
-knob($('#kShortenDelay'), 'Delay', () => state.decayMultiplier, v => {
+knob($('#kShortenDelay'), 'Decay', () => state.decayMultiplier, v => {
   state.decayMultiplier = v; sendDelayControl('hold');
 }, v => Number(v.toFixed(2)) + '\u00d7', {
   min: 0.1, max: 1, step: 0.01, reset: 1,
