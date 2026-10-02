@@ -267,6 +267,7 @@ class Voice {
     this.og = new Float64Array(4); this.o = new Float64Array(4);
     this.cur = new Float64Array(4); this.y1 = new Float64Array(4); this.y2 = new Float64Array(4);
     this.m = new Float64Array(16);
+    this.timbreSmooth = false; this.sharedMatrix = false; this.matrixScale = 1;
   }
 }
 
@@ -318,6 +319,7 @@ class FM8 extends AudioWorkletProcessor {
     this.recording = null;
     this.pending = [];
     this.stepDirty = false; this.stepSentAt = -Infinity; this.stepAck = true;
+    this.clockAck = true;
     // lookahead peak limiter (1.5 ms, ceiling -0.3 dBFS)
     this.laN = Math.max(8, Math.round(sampleRate * 0.0015));
     this.ceil = Math.pow(10, -0.3 / 20);
@@ -340,6 +342,15 @@ class FM8 extends AudioWorkletProcessor {
     this.decaySeq = -1; this.delayControlSeq = -1; this.delayReturn = null;
     this.transportBoundary = null;
     this.idxOut = new Array(8).fill(0);
+    // One shared 20 ms ramp per kit, at 16 base-rate frames, independent of oversampling/voice count.
+    this.timbreOwners = []; this.timbreKeys = [];
+    this.timbreTarget = new Float64Array(344); this.timbreDelta = new Float64Array(344);
+    this.timbreCurrent = new Float64Array(344); this.timbreIncoming = new Float64Array(344);
+    this.timbreIndices = new Uint16Array(344); this.timbreCount = 0;
+    this.timbreTicks = 0; this.timbreCountdown = 0; this.timbreDriveMask = 0;
+    this.driveWet = new Float64Array(8); this.driveWetTarget = new Float64Array(8); this.driveWetDelta = new Float64Array(8);
+    this.matrixCurrent = new Float64Array(128); this.matrixTarget = new Float64Array(128); this.matrixDelta = new Float64Array(128);
+    this.matrixIndices = new Uint8Array(128); this.matrixCount = 0;
     if (o.state) this.setState(o.state);
     this.port.onmessage = (e) => this.onMsg(e.data);
   }
@@ -357,6 +368,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.clock - this.errAt > sampleRate) { this.errAt = this.clock; this.port.postMessage({ type: 'engineError', message: msg || '' }); }
   }
   resetSync() {
+    this.cancelTimbre();
     // A freshly loaded kit starts a new history: forget every queued change and every sequence tally.
     this.mixSeq = this.undoSeq = this.lengthSeq = this.divisionSeq = this.randSeq = 0;
     this.lastMix = this.lastUndo = this.lastPend = null; this.lastLengthDivisor = 1; this.lastDivision = null;
@@ -422,16 +434,78 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.action === 'target') { const to = N(d.target, 0.1, 0.1, 1); this.beginDelayReturn(to, to === 0.1); }
     this.reportDelay();
   }
+  bindTimbre(keepWet = false) {
+    if (!keepWet) for (let t=0;t<8;t++) {
+      const tr=this.st.tracks[t]; this.driveWet[t]=tr.drive>0?1:0;
+      for (let r=0;r<4;r++) for (let c=0;c<4;c++) this.matrixCurrent[t*16+r*4+c]=tr.mx[r][c]*tr.idx;
+    }
+    const owners = this.timbreOwners, keys = this.timbreKeys;
+    owners.length = keys.length = 0;
+    for (const tr of this.st.tracks) {
+      for (const key of ['decS','idx','drive']) { owners.push(tr); keys.push(key); }
+      for (const op of tr.ops) for (const key of ['a','h','d1','brk','d2','curve']) { owners.push(op); keys.push(key); }
+      for (const row of tr.mx) for (let c=0;c<4;c++) { owners.push(row); keys.push(c); }
+    }
+  }
+  readTimbre(s, out) {
+    let i=0;
+    for (const tr of s.tracks) {
+      out[i++]=tr.decS; out[i++]=tr.idx; out[i++]=tr.drive;
+      for (const op of tr.ops) { out[i++]=op.a; out[i++]=op.h; out[i++]=op.d1; out[i++]=op.brk; out[i++]=op.d2; out[i++]=op.curve; }
+      for (const row of tr.mx) for (let c=0;c<4;c++) out[i++]=row[c];
+    }
+  }
+  cancelTimbre() { this.timbreTicks=0; this.timbreCount=0; this.timbreDriveMask=0; this.matrixCount=0; }
   applyTimbre(d) {
-    // Compact live update from the Evolution engine: 43 numbers per track. Ignored if a newer change has landed since.
+    // New targets replace a ramp from its CURRENT values, never from the previous target.
     if (!this.st || (d.rs || 0) < this.randSeq || (d.us || 0) < this.undoSeq) return;
-    const v = d.v; let i = 0;
-    const put = (o, k) => { const x = v[i++]; if (x - x === 0) o[k] = x; };
-    for (let t = 0; t < 8; t++) {
-      const tr = this.st.tracks[t];
-      put(tr, 'decS'); put(tr, 'idx'); put(tr, 'drive');
-      for (let q = 0; q < 4; q++) { const op = tr.ops[q]; put(op, 'a'); put(op, 'h'); put(op, 'd1'); put(op, 'brk'); put(op, 'd2'); put(op, 'curve'); }
-      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) put(tr.mx[r], c);
+    const v=d.v;
+    if (!v || v.length!==344) return;
+    const ticks=Math.max(1,Math.round(sampleRate*0.020/16)), frames=ticks*16;
+    const owners=this.timbreOwners, keys=this.timbreKeys;
+    this.timbreCount=0; this.timbreDriveMask=0;
+    for (let i=0;i<344;i++) {
+      const current=owners[i][keys[i]], target=Number.isFinite(v[i])?v[i]:current;
+      this.timbreTarget[i]=target;
+      const difference=target-current;
+      this.timbreDelta[i]=difference / (i%43===2 ? frames : ticks);
+      if (i%43===2) {
+        const t=Math.floor(i/43), wet=target>0?1:0;
+        this.driveWetTarget[t]=wet; this.driveWetDelta[t]=(wet-this.driveWet[t])/frames;
+        if (difference!==0 || wet!==this.driveWet[t]) this.timbreDriveMask |= 1 << t;
+      } else if (difference!==0) this.timbreIndices[this.timbreCount++]=i;
+    }
+    // Effective FM coefficients are shared by all voices on a track. Ramp them at
+    // the base sample rate, instead of updating 16 coefficients per oversampled voice.
+    this.matrixCount=0;
+    for (let t=0;t<8;t++) for (let j=0;j<16;j++) {
+      const i=t*16+j, target=this.timbreTarget[t*43+27+j]*this.timbreTarget[t*43+1];
+      this.matrixTarget[i]=target; this.matrixDelta[i]=(target-this.matrixCurrent[i])/frames;
+      if (target!==this.matrixCurrent[i]) this.matrixIndices[this.matrixCount++]=i;
+    }
+    this.timbreTicks=this.timbreCount || this.timbreDriveMask || this.matrixCount ? ticks : 0;
+    this.timbreCountdown=16;
+  }
+  advanceTimbre() {
+    if (!this.timbreTicks) return;
+    // Drive is applied to the whole bus; advance it each base-rate sample to avoid gain steps.
+    const tracks=this.st.tracks;
+    for (let t=0;t<8;t++) if (this.timbreDriveMask & (1<<t)) {
+      tracks[t].drive += this.timbreDelta[t*43+2]; this.driveWet[t] += this.driveWetDelta[t];
+    }
+    for (let n=0;n<this.matrixCount;n++) { const i=this.matrixIndices[n]; this.matrixCurrent[i]+=this.matrixDelta[i]; }
+    if (--this.timbreCountdown) return;
+    const remains=--this.timbreTicks, owners=this.timbreOwners, keys=this.timbreKeys;
+    for (let n=0;n<this.timbreCount;n++) {
+      const i=this.timbreIndices[n], owner=owners[i], key=keys[i];
+      owner[key]=remains ? owner[key]+this.timbreDelta[i] : this.timbreTarget[i];
+    }
+    if (remains) this.timbreCountdown=16;
+    else {
+      for (let t=0;t<8;t++) if (this.timbreDriveMask & (1<<t)) {
+        tracks[t].drive=this.timbreTarget[t*43+2]; this.driveWet[t]=this.driveWetTarget[t];
+      }
+      for (let n=0;n<this.matrixCount;n++) { const i=this.matrixIndices[n]; this.matrixCurrent[i]=this.matrixTarget[i]; }
     }
   }
   setOS(os) {
@@ -467,14 +541,32 @@ class FM8 extends AudioWorkletProcessor {
     if (this.st && this.decaySeq >= 0 && s.decaySeq <= this.decaySeq) {
       s.decayMultiplier = this.st.decayMultiplier; s.decayAutoReturn = this.st.decayAutoReturn; s.decaySeq = this.decaySeq;
     } else { this.decaySeq = s.decaySeq; this.delayReturn = null; }
+    // An unrelated UI sync must not jump to the end of an in-flight timbre ramp.
+    // Sequence reconciliation above already protects newer sounds. Beat-only changes
+    // may advance randSeq while leaving every timbre target unchanged.
+    let keepTimbre = this.timbreTicks>0;
+    if (keepTimbre) {
+      this.readTimbre(s,this.timbreIncoming);
+      for (let i=0;i<344;i++) if (this.timbreIncoming[i]!==this.timbreTarget[i]) { keepTimbre=false; break; }
+    }
+    if (keepTimbre) for (let i=0;i<344;i++) this.timbreCurrent[i]=this.timbreOwners[i][this.timbreKeys[i]];
+    else this.cancelTimbre();
     this.st = s;
+    this.bindTimbre(keepTimbre);
+    if (keepTimbre) for (let i=0;i<344;i++) this.timbreOwners[i][this.timbreKeys[i]]=this.timbreCurrent[i];
     if (this.evolutionCycle) this.evolutionCycle.length = this.patternCycle();
     this.setOS(s.os || 2);
     this.setGains(s);
     this.retargetDelayReturn();
   }
   merge(s, pend) {
-    for (let t = 0; t < 8; t++) if (pend[t]) Object.assign(s.tracks[t], JSON.parse(JSON.stringify(pend[t])));
+    let soundChanged=false;
+    for (let t = 0; t < 8; t++) if (pend[t]) {
+      if (['decS','idx','drive','ops','mx'].some(key=>Object.prototype.hasOwnProperty.call(pend[t],key))) soundChanged=true;
+      Object.assign(s.tracks[t], JSON.parse(JSON.stringify(pend[t])));
+    }
+    // Beat-only ping-pong leaves the current timbre ramp running.
+    if (soundChanged && s===this.st) { this.cancelTimbre(); this.bindTimbre(); }
   }
   rememberRandom(tracks) {
     this.lastPend = tracks; this.randSeq++; this.lastRandUndoSeq = this.undoSeq;
@@ -550,6 +642,7 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'mixPending') { const key=d.t+':'+d.key; if(d.value===null)delete this.mixPending[key];else this.mixPending[key]={t:d.t,key:d.key,value:!!d.value,id:d.id}; }
     else if (d.type === 'undoPending') { this.undoPending=d.value; if (d.value) this.randomPing=null; }
     else if (d.type === 'stepAck') this.stepAck = true;
+    else if (d.type === 'clkAck') this.clockAck = true;
     else if (d.type === 'lengthDivision') this.lengthPending = d.value === null ? null : N(d.value, 1, 1, 16);
     else if (d.type === 'division') this.divisionPending = d.value === null ? null : N(d.value, 4, 0.01, 8);
     else if (d.type === 'pending') { this.pend = d.tracks || null; if (this.pend) this.randomPing=null; }
@@ -596,6 +689,7 @@ class FM8 extends AudioWorkletProcessor {
     if (!v.on) { this.cnt[ti]++; this.total++; }
     v.on = true; v.fading = false; v.g = 1; v.gd = 0; v.t = 0; v.cr = 0; v.tr = ti; v.vel = vel;
     v.age = this.ageCtr++;
+    v.timbreSmooth = false; v.sharedMatrix = false;
     v.decayMultiplier = st.decayMultiplier;
     v.rp = Math.pow(2, (Math.random() * 2 - 1) * tr.rndPitch / 1200);
     v.ri = Math.max(0, 1 + (Math.random() * 2 - 1) * tr.rndTone);
@@ -607,6 +701,10 @@ class FM8 extends AudioWorkletProcessor {
     const tr = this.st.tracks[v.tr];
     const msPer = 1000 / this.osr;
     const t0 = v.t * msPer, t1 = (v.t + CR) * msPer;
+    // Retain one final handoff interval after a ramp completes. New attacks and static kits
+    // keep the original envelope path; sounding tails never jump to a recalculated level.
+    const ramping = this.timbreTicks>0 || v.timbreSmooth, smooth = v.t>0 && ramping;
+    v.sharedMatrix = ramping; v.timbreSmooth = this.timbreTicks>0;
     // New hits use the selected scale immediately; live tails slew over at most 8 ms.
     const decayStep = 0.9 * CR / (this.osr * 0.008);
     v.decayMultiplier += Math.max(-decayStep, Math.min(decayStep, this.st.decayMultiplier - v.decayMultiplier));
@@ -619,11 +717,17 @@ class FM8 extends AudioWorkletProcessor {
       const L = op.a + op.h + (op.d1 + op.d2) * ds;
       if (L > longest) longest = L;
     }
-    if (t0 > (n - 1) * sp + longest + 1) { this.kill(v); return; }
+    if (t0 > (n - 1) * sp + longest + 1) {
+      // An envelope shortened past its age must first reach zero continuously.
+      let audible=false;
+      if (smooth) for (let i=0;i<4;i++) if (tr.out[i]>0 && Math.abs(v.env[i]*v.og[i])>1e-9) { audible=true; break; }
+      if (!audible) { this.kill(v); return; }
+    }
     const lt = (t) => { const k = Math.min(n - 1, Math.floor(t / sp)); const tl = t - k * sp; return k < n - 1 ? tl * 3 : tl; };
     const l0 = lt(t0), l1 = lt(t1);
     const vel = v.vel;
     const vi = (1 - tr.velIdx * (1 - vel)) * tr.idx * v.ri;
+    v.matrixScale = (1 - tr.velIdx * (1 - vel)) * v.ri;
     const tm = (t0 + t1) * 0.5;
     const semis = tm < tr.pDec ? tr.pAmt * Math.pow(1 - tm / tr.pDec, Math.pow(2, tr.pCurve * 3)) : 0;
     const base = tr.note * v.rp;
@@ -631,7 +735,8 @@ class FM8 extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) {
       const op = tr.ops[i];
       const e0 = envAt(op, l0, ds), e1 = envAt(op, l1, ds);
-      v.env[i] = e0; v.einc[i] = (e1 - e0) / CR;
+      if (!smooth) v.env[i] = e0;
+      v.einc[i] = (e1 - (smooth ? v.env[i] : e0)) / CR;
       v.og[i] = op.lvl * (1 - op.vel * (1 - vel));
       const pm = Math.pow(2, semis * op.pe / 12);
       let f = op.fixed ? op.hz * pm : base * op.ratio * Math.pow(2, op.fine / 1200) * pm + op.det;
@@ -644,18 +749,19 @@ class FM8 extends AudioWorkletProcessor {
     v.amp = 1 - tr.velAmp * (1 - vel);
   }
   voiceSample(v) {
-    const m = v.m, cur = v.cur, y1 = v.y1, y2 = v.y2, ph = v.ph, env = v.env, og = v.og, inc = v.inc, einc = v.einc;
+    const m = v.sharedMatrix ? this.matrixCurrent : v.m, mb = v.sharedMatrix ? v.tr*16 : 0, scale = v.sharedMatrix ? v.matrixScale : 1;
+    const cur = v.cur, y1 = v.y1, y2 = v.y2, ph = v.ph, env = v.env, og = v.og, inc = v.inc, einc = v.einc;
     for (let i = 3; i >= 0; i--) {
       const e = env[i] * og[i];
       if (e !== 0) {
         let mod = 0;
-        const b = i * 4;
+        const b = mb + i * 4;
         for (let j = 0; j < 4; j++) {
           const a = m[b + j];
           if (a === 0) continue;
           mod += a * (j > i ? cur[j] : (j === i ? 0.5 * (y1[i] + y2[i]) : y1[j]));
         }
-        cur[i] = Math.sin(TAU * ph[i] + mod) * e;
+        cur[i] = Math.sin(TAU * ph[i] + mod * scale) * e;
       } else cur[i] = 0;
       let p = ph[i] + inc[i];
       if (p >= 1 || p < 0) p -= Math.floor(p);
@@ -687,8 +793,13 @@ class FM8 extends AudioWorkletProcessor {
         bus += this.voiceSample(v);
       }
       if (!any) continue;
-      const dr = tracks[t].drive;
-      if (dr > 0) { const g = 1 + dr * dr * 20; bus = Math.tanh(bus * g) / Math.tanh(g); }
+      const dr = tracks[t].drive, wet=this.driveWet[t];
+      if (wet > 0) {
+        const g = 1 + dr * dr * 20, shaped = Math.tanh(bus * g) / Math.tanh(g);
+        // Crossing zero must also crossfade the bypass: at tiny drive the waveshaper
+        // already differs from the dry signal. Static bypass/full-wet paths are exact.
+        bus = wet===1 ? shaped : bus+(shaped-bus)*wet;
+      }
       L += bus * this.gL[t]; R += bus * this.gR[t];
     }
     this.sL = L; this.sR = R;
@@ -866,6 +977,7 @@ class FM8 extends AudioWorkletProcessor {
         const u=this.undoPending;this.undoPending=null;this.lastUndo=u;this.undoSeq++;
         this.randomChanges = Array.from({length:8}, () => ({}));
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
+        this.cancelTimbre();this.bindTimbre();
         this.pend=null;this.lengthPending=null;this.returnTicks=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
         for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
@@ -966,6 +1078,7 @@ class FM8 extends AudioWorkletProcessor {
     const os = this.os, fir = this.fir, taps = this.taps, fL = this.fL, fR = this.fR;
     const mg = this.st.master, dcR = this.dcR;
     for (let f = 0; f < L.length; f++) {
+      if (this.timbreTicks) this.advanceTimbre();
       if (this.playing) this.advance();
       let yl, yr;
       if (this.total === 0) { if (this.quiet < taps + 2) this.quiet++; } else this.quiet = 0;
@@ -1017,7 +1130,11 @@ class FM8 extends AudioWorkletProcessor {
       this.stepDirty=false; this.stepAck=false; this.stepSentAt=this.clock;
     }
     if (this.playing && (++this.blk & 7) === 0) {
-      this.port.postMessage({ type: 'clk', remaining:this.boundaryCountdown(), time:this.clock/sampleRate });
+      // Keep at most one clock message pending when the UI thread is busy.
+      if (this.clockAck) {
+        this.clockAck = false;
+        this.port.postMessage({ type: 'clk', remaining:this.boundaryCountdown(), time:this.clock/sampleRate });
+      }
       if (this.delayReturn) this.reportDelay();
     }
     return true;
@@ -1266,6 +1383,8 @@ function prepareAudio() {
     node.port.onmessage = e => {
       if(node!==activeNode || ctx!==activeContext)return;
       const d = e.data;
+      // Acknowledge clock messages even while a saved setup is loading.
+      if (d.type === 'clk') node.port.postMessage({type:'clkAck'});
       // Discard acknowledgements from the previous setup until the load reaches the audio thread.
       if (sessionLoading) {
         if (d.type === 'sessionLoaded' && d.id === sessionLoading) sessionLoading = 0;
@@ -2261,7 +2380,11 @@ function stopEvolution(kept = false) {
 }
 function evolveTick(now) {
   // Scale the whole timbre motion clock so 10\u00d7 speeds up the same process in either direction.
-  const dt = (evolutionTime === null ? 0 : Math.min(0.1, Math.max(0, (now - evolutionTime) / 1000))) * evolutionMultiplier;
+  // Old messages must not rewind the clock after Play or a manual mode change.
+  if (evolutionTime !== null && now <= evolutionTime) return;
+  // Resume with one ordinary step after a UI stall, never a catch-up jump.
+  const interval = 1024 / (ctx ? ctx.sampleRate : 48000);
+  const dt = (evolutionTime === null ? 0 : Math.min(interval, (now - evolutionTime) / 1000)) * evolutionMultiplier;
   evolutionTime = now;
   if (!(evolving || devolving) || !playing || !ctx || ctx.state !== 'running' || evolutionTouch || (document.activeElement?.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) return;
   if (devolving) reverseTimbre(dt);
