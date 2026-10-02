@@ -151,7 +151,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><button id="undo">Undo</button></div>
   <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
   <div class="spacer"></div>
-  <div class="grp"><button id="evolve" aria-pressed="false">Evolution</button><div id="kEvolve" class="knob" title="Evolution and devolution speed"></div><div class="grp" style="flex-wrap:nowrap"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div></div>
+  <div class="grp"><div class="seg"><button id="evolve" aria-pressed="false">Evolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div><div id="kEvolve" class="knob" title="Evolution and devolution speed"></div><div class="seg" id="evolutionLoop" role="group" aria-label="Automatic devolution"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolutionPing" class="random-pp" type="button" aria-label="Evolution and devolution ping-pong" aria-pressed="false"></button><button type="button" data-evolution-measures="1" aria-label="1 measure before devolution">1</button><button type="button" data-evolution-measures="2" aria-label="2 measures before devolution">2</button><button type="button" data-evolution-measures="3" aria-label="3 measures before devolution">3</button><button type="button" data-evolution-measures="4" aria-label="4 measures before devolution">4</button></div></div>
   <div class="grp"><span class="cap">Voices</span><div class="seg" id="vmode"></div></div>
 </section>
 
@@ -336,6 +336,7 @@ class FM8 extends AudioWorkletProcessor {
     this.pend = null; this.lastPend = null; this.randSeq = 0; this.lastRandUndoSeq = 0;
     this.randomChanges = Array.from({length:8}, () => ({}));
     this.randomPing = null;
+    this.evolutionCycle = null;
     this.decaySeq = -1; this.delayControlSeq = -1; this.delayReturn = null;
     this.transportBoundary = null;
     this.idxOut = new Array(8).fill(0);
@@ -360,6 +361,7 @@ class FM8 extends AudioWorkletProcessor {
     this.mixSeq = this.undoSeq = this.lengthSeq = this.divisionSeq = this.randSeq = 0;
     this.lastMix = this.lastUndo = this.lastPend = null; this.lastLengthDivisor = 1; this.lastDivision = null;
     this.lastRandUndoSeq = 0; this.randomPing = null;
+    this.evolutionCycle = null;
     this.randomChanges = Array.from({length:8}, () => ({}));
     this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending = null; this.mixPending = {};
     this.revArm.fill(0); this.flipArm = false; this.returnTicks = null;
@@ -466,6 +468,7 @@ class FM8 extends AudioWorkletProcessor {
       s.decayMultiplier = this.st.decayMultiplier; s.decayAutoReturn = this.st.decayAutoReturn; s.decaySeq = this.decaySeq;
     } else { this.decaySeq = s.decaySeq; this.delayReturn = null; }
     this.st = s;
+    if (this.evolutionCycle) this.evolutionCycle.length = this.patternCycle();
     this.setOS(s.os || 2);
     this.setGains(s);
     this.retargetDelayReturn();
@@ -526,7 +529,10 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'evolutionCycle') {
+      this.evolutionCycle = [1,2,3,4].includes(d.measures) ? {id:d.id,left:d.measures,length:this.patternCycle()} : null;
+    }
     else if (d.type === 'randomPing') {
       if (d.mode !== 'sounds' && d.mode !== 'beats' && d.mode !== 'both') this.randomPing = null;
       else {
@@ -693,22 +699,29 @@ class FM8 extends AudioWorkletProcessor {
     const a = q + ((((q % 2) + 2) % 2) ? sw : 0), b = q1 + ((((q1 % 2) + 2) % 2) ? sw : 0);
     return d * (a * (1-f) + b * f);
   }
+  unswungTick(pos, divisor, swing) {
+    const pair = Math.floor(pos / (2 * divisor)), phase = pos / divisor - 2 * pair;
+    return divisor * (2 * pair + (phase <= 1 + swing ? phase / (1 + swing) : 1 + (phase - 1 - swing) / (1 - swing)));
+  }
   advance() {
     const st = this.st;
+    const cycle = this.evolutionCycle, oldPos = this.pos, divisor = st.lengthDivisor || 1, swing = st.swing * 0.5;
+    const cycleLength = cycle ? cycle.length : 1;
     const rate = st.bpm * st.spb * (st.lengthDivisor || 1) / (60 * sampleRate);
     const nw = this.pos + rate;
+    let travelEnd = nw;
     this.pos = nw;
     if (this.delayReturn) this.advanceDelayReturn();
     let budget = 32; // Hard bound: a malformed state must never monopolize the audio thread.
     if (rate > 0) {
       while (budget-- > 0 && this.playing && this.ev(this.nk) <= nw) {
-        const k = this.nk; this.pk = k; this.nk = k + 1; this.fireStep(k);
-        if (this.flipAt(k)) { this.pk = k - 1; this.nk = k; this.pos = this.ev(k); break; }
+        const k = this.nk, eventPos = this.ev(k); this.pk = k; this.nk = k + 1; this.fireStep(k);
+        if (this.flipAt(k)) { travelEnd = eventPos; this.pk = k - 1; this.nk = k; this.pos = this.ev(k); break; }
       }
     } else if (rate < 0) {
       while (budget-- > 0 && this.playing && this.ev(this.pk) >= nw) {
-        const k = this.pk; this.nk = k; this.pk = k - 1; this.fireStep(k);
-        if (this.flipAt(k)) { this.nk = k + 1; this.pk = k; this.pos = this.ev(k); break; }
+        const k = this.pk, eventPos = this.ev(k); this.nk = k; this.pk = k - 1; this.fireStep(k);
+        if (this.flipAt(k)) { travelEnd = eventPos; this.nk = k + 1; this.pk = k; this.pos = this.ev(k); break; }
       }
     }
     if (budget < 0) {
@@ -716,6 +729,15 @@ class FM8 extends AudioWorkletProcessor {
       const pair = Math.floor(this.pos / (2*d)), phase = this.pos / d - 2*pair;
       const tick = d * (2*pair + (phase <= 1+sw ? phase/(1+sw) : 1+(phase-1-sw)/(1-sw)));
       this.pk = Math.ceil(tick)-1; this.nk = Math.floor(tick)+1;
+    }
+    // Count full musical measures from this leg's exact starting phase, in either direction.
+    // A return just before a downbeat must not create a near-zero forward leg.
+    if (cycle && this.evolutionCycle === cycle) {
+      cycle.left -= Math.abs(this.unswungTick(travelEnd, divisor, swing) - this.unswungTick(oldPos, divisor, swing)) / cycleLength;
+      if (cycle.left <= 1e-9) {
+        this.evolutionCycle = null;
+        this.port.postMessage({type:'evolutionTurn',id:cycle.id,time:this.clock/sampleRate});
+      }
     }
   }
   // Manual Flip and global Ping pong share one reversal at a measure boundary.
@@ -870,6 +892,7 @@ class FM8 extends AudioWorkletProcessor {
     }
     this.applyRandomPing(k);
     const mixCycle=this.patternCycle();
+    if (this.evolutionCycle) this.evolutionCycle.length = mixCycle;
     const patternBoundary=(((k-this.patternOrigin)%mixCycle)+mixCycle)%mixCycle===0;
     let ppChanged = 0;
     if(Object.keys(this.mixPending).length && patternBoundary){
@@ -1151,7 +1174,7 @@ function defaultKit() {
       len: 7, steps: pat('3000000') }),
   ];
 }
-const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, randomPingDivisorHold: false, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
+const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, randomPingDivisorHold: false, evolutionPingPong: false, evolutionMeasures: 1, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
 let state = loadLocal() || Object.assign({}, DEFAULTS, { tracks: defaultKit() });
 let delayReturning = false, delayHolding = false, delayTarget = 1, delayUiPaint = 0;
 let sel = 0, wild = 35, density = 45, clip = null;
@@ -1171,6 +1194,8 @@ function normalize(s) {
   const o = Object.assign({}, DEFAULTS, s);
   o.transportPingPong = s.transportPingPong === true;
   o.randomPingDivisorHold = s.randomPingDivisorHold === true;
+  o.evolutionPingPong = s.evolutionPingPong === true;
+  o.evolutionMeasures = [1,2,3,4].includes(s.evolutionMeasures) ? s.evolutionMeasures : 1;
   o.decayMultiplier = Number.isFinite(o.decayMultiplier) ? clamp(o.decayMultiplier, 0.1, 1) : 1;
   o.decayAutoReturn = s.decayAutoReturn === true; o.decaySeq = 0;
   o.autoReturn = escKnown ? !!s.autoReturn : true; o.escDefaultV1 = true;   // ESC is remembered; older saves get the default once
@@ -1230,6 +1255,7 @@ function prepareAudio() {
   audioReady = (async () => {
     try {
     engineURL = await loadWorklet(ctx.audioWorklet);
+    evolutionTime = null; evolutionPaint = 0;
     state.mixSeq = 0; engineMixSeq=0;
     state.undoSeq = 0;
     state.decaySeq = 0; delayReturning = false; delayTarget = 1;
@@ -1247,7 +1273,8 @@ function prepareAudio() {
       }
       if (d.type.startsWith('record')) handleRecording(d);
       else if (d.type === 'step') { node.port.postMessage({type:'stepAck'}); if (!document.hidden) { stepQ.push({ k: d.k, idx: d.idx, t: d.f / ctx.sampleRate }); if (stepQ.length > 512) stepQ.splice(0, stepQ.length - 128); } }
-      else if (d.type === 'clk') { countdownClock={remaining:d.remaining,time:d.time}; evolveTick(performance.now()); }
+      else if (d.type === 'clk') { countdownClock={remaining:d.remaining,time:d.time}; evolveTick(d.time * 1000); }
+      else if (d.type === 'evolutionTurn') landEvolutionTurn(d);
       else if (d.type === 'delayStatus') handleDelayStatus(d);
       else if (d.type === 'engineError') $('#xstat').textContent = 'audio engine recovered from a bad value';
       else if (d.type === 'mixApplied') { state.mixSeq=engineMixSeq=d.seq;for(const c of d.changes){state.tracks[c.t][c.key]=c.value;if(c.key==='pp'&&!c.value){state.tracks[c.t].rev=false;revArm[c.t]=false;paintRev(c.t);}const key=c.t+':'+c.key;if(pendingMix[key]?.id===c.id)delete pendingMix[key];}paintMix();saveLocal(); }
@@ -1263,7 +1290,7 @@ function prepareAudio() {
     node.onprocessorerror = () => engineDied('audio engine stopped \u2014 press Play');
     an = ctx.createAnalyser(); an.fftSize = 2048;
     node.connect(an); node.connect(ctx.destination);
-      sendRandomPing(); fmtInfo(); return true;
+      sendRandomPing(); armEvolutionCycle(); fmtInfo(); return true;
     } catch (e) {
       const failed = ctx; ctx = null; node = null; an = null; audioReady = null;
       if (failed) failed.close().catch(() => {});
@@ -1316,6 +1343,8 @@ async function togglePlay() {
   $('#play').textContent = playing ? 'Stop' : 'Play';
   $('#play').classList.toggle('on', playing);
   paintEvolution();
+  evolutionTime = playing && ctx ? ctx.currentTime * 1000 : null;
+  armEvolutionCycle();
   if (!playing) {
     if (node) node.port.postMessage({type:'stop'});
     saveLocal();
@@ -2106,6 +2135,7 @@ function genRhythm(tr, dens) {
 /* ---------- continuous kit evolution ---------- */
 let evolving = false, evolutionSpeed = 25, evolutionTime = null, evolutionPaint = 0;
 let evolutionMultiplier = 1;
+let evolutionCycleId = 0;
 let devolving = false, evolutionTrail = [], trailTime = 0, trailSample = 0;
 // Cached list of every evolving field, rebuilt only when the kit's objects are replaced.
 // entry: o = owner object, s = full-range spec, id = walker id, e = spec used while drifting (or null), lim = soft ceiling, mx = matrix cell
@@ -2156,13 +2186,17 @@ function reverseTimbre(dt) {
   timbreFields().forEach(({ o, s: spec }, i) => {
     o[spec.k] = trailTime === 0 ? evolutionTrail[0].values[i] : toVal(spec, toNorm(spec, a.values[i]) * (1-f) + toNorm(spec, b.values[i]) * f);
   });
-  if (trailTime === 0) { devolving = false; evolutionTrail = []; stopEvolution(); }
+  if (trailTime === 0) {
+    devolving = false; evolutionTrail = [];
+    if (state.evolutionPingPong) startEvolution(true, evolutionTime);
+    else stopEvolution();
+  }
 }
 let evolutionTouch = false;
 const evolutionMotion = new Map();
 // Pause for manual sound edits, but keep moving while global evolution or tail controls are held.
 document.addEventListener('pointerdown', e => {
-  evolutionTouch = !e.target.closest('#kEvolve, #evolve, #devolve, #evolveFast, #kShortenDelay, .delay-auto');
+  evolutionTouch = !e.target.closest('#kEvolve, #evolve, #evolveFast, #evolutionLoop, #kShortenDelay, .delay-auto');
 });
 document.addEventListener('pointerup', () => evolutionTouch = false);
 document.addEventListener('pointercancel', () => evolutionTouch = false);
@@ -2175,10 +2209,49 @@ function paintEvolution() {
   $('#devolve').disabled = !devolving && evolutionTrail.length < 2;
   $('#evolveFast').classList.toggle('on', evolutionMultiplier === 10);
   $('#evolveFast').setAttribute('aria-pressed', evolutionMultiplier === 10);
+  const ping = $('#evolutionPing');
+  ping.classList.toggle('on', state.evolutionPingPong);
+  ping.setAttribute('aria-pressed', state.evolutionPingPong);
+  ping.title = 'Evolve for ' + state.evolutionMeasures + ' measure' + (state.evolutionMeasures === 1 ? '' : 's') + ', retrace the evolution path, then repeat. Turning ping-pong off leaves the current mode running.';
+  for (const b of document.querySelectorAll('[data-evolution-measures]')) {
+    const on = +b.dataset.evolutionMeasures === state.evolutionMeasures;
+    b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    b.title = b.dataset.evolutionMeasures + ' measure' + (b.dataset.evolutionMeasures === '1' ? '' : 's') + ' before automatic devolution';
+  }
+}
+function armEvolutionCycle() {
+  ++evolutionCycleId;
+  if (node) node.port.postMessage({type:'evolutionCycle',id:evolutionCycleId,
+    measures: state.evolutionPingPong && evolving && playing ? state.evolutionMeasures : 0});
+}
+function startEvolution(fresh = false, at = ctx ? ctx.currentTime * 1000 : null) {
+  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
+  if (devolving) recordTrail();
+  devolving = false;
+  if (fresh) { evolutionTrail = []; trailTime = trailSample = 0; }
+  if (!evolutionTrail.length) { trailTime = 0; recordTrail(); }
+  evolving = true; evolutionTime = at; evolutionMotion.clear();
+  armEvolutionCycle(); paintEvolution();
+}
+function startDevolution(at = ctx ? ctx.currentTime * 1000 : null) {
+  recordTrail();
+  if (evolutionTrail.length < 2) return false;
+  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
+  evolving = false; devolving = true; evolutionTime = at; evolutionMotion.clear();
+  armEvolutionCycle();
+  pend.sounds = null; sendPend(); paintEvolution();
+  return true;
+}
+function landEvolutionTurn(d) {
+  if (d.id !== evolutionCycleId || !state.evolutionPingPong || !evolving || !playing) return;
+  // Complete the forward endpoint on the audio clock before retracing its saved values.
+  evolveTick(d.time * 1000);
+  if (!startDevolution(d.time * 1000)) startEvolution(true, d.time * 1000);
 }
 function stopEvolution(kept = false) {
   if (evolving || devolving) recordTrail();
   evolving = devolving = false; evolutionTime = null; evolutionMotion.clear();
+  armEvolutionCycle();
   paintEvolution();
   if (kept) {
     // A queued sound randomization must not overwrite a kept kit.
@@ -2236,21 +2309,28 @@ function renderAll() { renderSeq(); renderEditor(); sync(); }
 $('#play').onclick = togglePlay;
 $('#evolve').onclick = () => {
   if (evolving) { stopEvolution(true); return; }
-  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
   pushUndo();
-  if (devolving) { recordTrail(); devolving = false; }
-  if (!evolutionTrail.length) { trailTime = 0; recordTrail(); }
-  evolving = true; evolutionTime = null; evolutionMotion.clear(); paintEvolution();
+  startEvolution(state.evolutionPingPong);
 };
 $('#devolve').onclick = () => {
   if (devolving) { stopEvolution(true); return; }
   if (evolutionTrail.length < 2) return;
-  if (randomPing && randomPing.mode !== 'beats') stopRandomPing();
-  pushUndo(); recordTrail(); evolving = false; devolving = true;
-  evolutionTime = null; evolutionMotion.clear();
-  pend.sounds = null; sendPend(); paintEvolution();
+  pushUndo(); startDevolution();
 };
 $('#devolve').title = 'Retrace the evolution path backwards to the starting kit, at the same pace it was travelled.';
+$('#evolutionPing').innerHTML = PP_ICON;
+$('#evolutionPing').onclick = () => {
+  state.evolutionPingPong = !state.evolutionPingPong;
+  if (state.evolutionPingPong && !devolving) { pushUndo(); startEvolution(true); }
+  else { armEvolutionCycle(); paintEvolution(); }
+  saveLocal();
+};
+for (const b of document.querySelectorAll('[data-evolution-measures]')) b.onclick = () => {
+  const measures = +b.dataset.evolutionMeasures;
+  if (measures === state.evolutionMeasures) return;
+  state.evolutionMeasures = measures;
+  armEvolutionCycle(); paintEvolution(); saveLocal();
+};
 $('#evolveFast').onclick = () => { evolutionMultiplier = evolutionMultiplier === 10 ? 1 : 10; paintEvolution(); };
 knob($('#kEvolve'), 'Speed', () => evolutionSpeed, v => evolutionSpeed = v,
   v => v + '%');
@@ -2719,7 +2799,7 @@ $('#kitFile').onchange = async e => {
     state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = 0;
     engineMixSeq = engineLengthSeq = 0; engineRand = 0; state.flipSeq = engineFlips;
     if (node) node.port.postMessage({ type: 'loadKit', state });
-    clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); $('#xstat').textContent = '';
+    clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); paintEvolution(); $('#xstat').textContent = '';
   }
   catch (err) { $('#xstat').textContent = 'not a kit file'; }
   e.target.value = '';
@@ -2728,7 +2808,7 @@ $('#kitFile').onchange = async e => {
 /* ---------- full setup files ---------- */
 const SESSION_FORMAT = 'percussion-synthesizer-session';
 const SESSION_GLOBALS = ['bpm', 'bpmSnap', 'swing', 'spb', 'master', 'os', 'voiceMode',
-  'autoReturn', 'lengthDivisor', 'transportPingPong', 'randomPingDivisorHold', 'decayMultiplier', 'decayAutoReturn'];
+  'autoReturn', 'lengthDivisor', 'transportPingPong', 'randomPingDivisorHold', 'evolutionPingPong', 'evolutionMeasures', 'decayMultiplier', 'decayAutoReturn'];
 const copyJSON = value => JSON.parse(JSON.stringify(value));
 function captureSession() {
   // Include the current point, so Devolution can still retrace the saved route.
@@ -2779,6 +2859,9 @@ function validateSession(file) {
     decayMultiplier: number(s.decayMultiplier, 0.1, 1), tracks: array(s.tracks, 8).map(track)
   });
   for (const k of ['autoReturn', 'transportPingPong', 'randomPingDivisorHold', 'decayAutoReturn']) st[k] = bool(s[k]);
+  // Version 1 files from before evolution ping-pong remain compatible.
+  st.evolutionPingPong = s.evolutionPingPong === undefined ? false : bool(s.evolutionPingPong);
+  st.evolutionMeasures = s.evolutionMeasures === undefined ? 1 : choice(s.evolutionMeasures, [1,2,3,4]);
   const controls = {wild: number(c.wild, 0, 100), density: number(c.density, 0, 100), selectedTrack: number(c.selectedTrack, 0, 7, true)};
   const wav = {loops: number(w.loops, 1, 64, true), rate: choice(w.rate, [0, 44100, 48000, 96000, '4x']), bits: choice(w.bits, [16, 24, 32])};
   // Match captureTimbre's fixed field order, without replacing the live kit to inspect it.
@@ -2842,6 +2925,7 @@ function restoreSession(saved) {
   sessionLoading = node ? ++sessionLoadCounter : 0;
   if (node) node.port.postMessage({type: 'loadKit', state, sessionId: sessionLoading});
   sendRandomPing();
+  armEvolutionCycle();
   $('#play').textContent = 'Play'; $('#play').classList.remove('on');
   renderHeader(); renderVMode(); renderAll(); paintEvolution(); paintRandomPing(); paintUndo();
   for (const id of ['#kWild', '#kDens', '#kEvolve', '#loops', '#xbits']) $(id)._upd?.();
@@ -2875,7 +2959,7 @@ $('#sessionFile').onchange = async e => {
 /* ---------- boot ---------- */
 void prepareAudio();
 renderExportRate();
-renderHeader(); renderVMode(); renderSeq(); renderEditor();
+renderHeader(); renderVMode(); renderSeq(); renderEditor(); paintEvolution();
 requestAnimationFrame(frame);
 let rz = 0; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i); }, 100); });
 if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { fgCache = null; drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i); });
