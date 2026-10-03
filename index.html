@@ -158,7 +158,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 <section id="seq" tabindex="0" role="region" aria-label="Step sequencer">
   <div class="seqcontent">
   <div class="seqtop">
-    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="randomPingPause" class="random-pp" type="button" aria-label="Hold randomization ping-pong during divisors" aria-pressed="false"></button><button id="clear">Clear</button></div></div>
+    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="randomPingPause" class="random-pp" type="button" aria-label="Hold randomization ping-pong during divisors" aria-pressed="false"></button><button id="clear">Clear</button><button id="patternShift" class="random-pp" type="button" aria-label="Automatically shift patterns up one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 11.5V0.5M3.5 4L7 0.5L10.5 4"/></svg></button><button id="patternShiftDown" class="random-pp" type="button" aria-label="Automatically shift patterns down one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 0.5V11.5M3.5 8L7 11.5L10.5 8"/></svg></button><button type="button" data-shift-measures="1" aria-label="Shift patterns every 1 measure">1</button><button type="button" data-shift-measures="2" aria-label="Shift patterns every 2 measures">2</button><button type="button" data-shift-measures="3" aria-label="Shift patterns every 3 measures">3</button><button type="button" data-shift-measures="4" aria-label="Shift patterns every 4 measures">4</button></div></div>
   </div>
   <div class="rows" id="rows"></div>
   </div>
@@ -231,6 +231,9 @@ function cleanState(s) {
   s.decayAutoReturn = !!s.decayAutoReturn; s.decaySeq = Math.floor(N(s.decaySeq, 0, 0, Number.MAX_SAFE_INTEGER));
   s.transportPingPong = !!s.transportPingPong;
   s.randomPingDivisorHold = !!s.randomPingDivisorHold;
+  s.patternShift = !!s.patternShift;
+  s.patternShiftDirection = s.patternShiftDirection === 'down' ? 'down' : 'up';
+  s.patternShiftMeasures = [1,2,3,4].includes(s.patternShiftMeasures) ? s.patternShiftMeasures : 1;
   if (!Array.isArray(s.tracks)) s.tracks = [];
   while (s.tracks.length < 8) s.tracks.push({});
   for (let t = 0; t < 8; t++) {
@@ -338,6 +341,7 @@ class FM8 extends AudioWorkletProcessor {
     this.pend = null; this.lastPend = null; this.randSeq = 0; this.lastRandUndoSeq = 0;
     this.randomChanges = Array.from({length:8}, () => ({}));
     this.randomPing = null;
+    this.patternShiftClock = {remaining:1,boundary:0};
     this.evolutionCycle = null;
     this.decaySeq = -1; this.delayControlSeq = -1; this.delayReturn = null;
     this.transportBoundary = null;
@@ -373,6 +377,7 @@ class FM8 extends AudioWorkletProcessor {
     this.mixSeq = this.undoSeq = this.lengthSeq = this.divisionSeq = this.randSeq = 0;
     this.lastMix = this.lastUndo = this.lastPend = null; this.lastLengthDivisor = 1; this.lastDivision = null;
     this.lastRandUndoSeq = 0; this.randomPing = null;
+    this.resetPatternShift();
     this.evolutionCycle = null;
     this.randomChanges = Array.from({length:8}, () => ({}));
     this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending = null; this.mixPending = {};
@@ -519,6 +524,7 @@ class FM8 extends AudioWorkletProcessor {
   }
   setState(s) {
     cleanState(s);
+    const shiftChanged = !this.st || s.patternShift !== this.st.patternShift || s.patternShiftMeasures !== this.st.patternShiftMeasures || s.patternShiftDirection !== this.st.patternShiftDirection;
     // a bar-synced flip may have happened after the UI sent this state: keep the engine's direction
     const d = this.flips - (s.flipSeq || 0);
     if (d > 0 && (d & 1)) s.bpm = -s.bpm;
@@ -526,6 +532,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.st && this.playing && Math.sign(s.bpm) !== Math.sign(this.st.bpm)) {
       if (this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) > 1e-9) this.transportBoundary = null;
       if (this.randomPing && this.randomPing.boundary !== null && Math.abs(this.pos-this.ev(this.randomPing.boundary)) > 1e-9) this.randomPing.boundary = null;
+      if (this.patternShiftClock.boundary !== null && Math.abs(this.pos-this.ev(this.patternShiftClock.boundary)) > 1e-9) this.patternShiftClock.boundary = null;
     }
     if ((s.divisionSeq || 0) < this.divisionSeq) s.spb = this.lastDivision;
     if ((s.lengthSeq || 0) < this.lengthSeq) s.lengthDivisor = this.lastLengthDivisor;
@@ -552,6 +559,7 @@ class FM8 extends AudioWorkletProcessor {
     if (keepTimbre) for (let i=0;i<344;i++) this.timbreCurrent[i]=this.timbreOwners[i][this.timbreKeys[i]];
     else this.cancelTimbre();
     this.st = s;
+    if (shiftChanged) this.resetPatternShift();
     this.bindTimbre(keepTimbre);
     if (keepTimbre) for (let i=0;i<344;i++) this.timbreOwners[i][this.timbreKeys[i]]=this.timbreCurrent[i];
     if (this.evolutionCycle) this.evolutionCycle.length = this.patternCycle();
@@ -591,6 +599,7 @@ class FM8 extends AudioWorkletProcessor {
     this.playing = true; this.pos = 0; this.nk = 0; this.pk = 0; this.fired = 0; this.flipArm = false;
     this.transportBoundary = 0; // Play the first whole measure before an automatic reversal.
     if (this.randomPing) this.randomPing.boundary = 0;
+    this.resetPatternShift(0);
     // per-track direction: index(k) = i0 + dir * (k - k0), wrapped to the track length
     for (let t = 0; t < 8; t++) {
       const tr = this.st.tracks[t], len = Math.max(1, Math.min(64, tr.len | 0)), rev = !!tr.rev;
@@ -621,7 +630,14 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'stop') { if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.resetPatternShift(0); this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'patternShiftControl' && this.st) {
+      const measures = [1,2,3,4].includes(d.measures) ? d.measures : 1;
+      const direction = d.direction === 'down' ? 'down' : 'up';
+      if (this.st.patternShift !== !!d.on || this.st.patternShiftMeasures !== measures || this.st.patternShiftDirection !== direction) {
+        this.st.patternShift = !!d.on; this.st.patternShiftMeasures = measures; this.st.patternShiftDirection = direction; this.resetPatternShift();
+      }
+    }
     else if (d.type === 'evolutionCycle') {
       this.evolutionCycle = [1,2,3,4].includes(d.measures) ? {id:d.id,left:d.measures,length:this.patternCycle()} : null;
     }
@@ -949,6 +965,30 @@ class FM8 extends AudioWorkletProcessor {
       this.returnTicks=cycle*st.lengthDivisor;
     }
   }
+  resetPatternShift(boundary) {
+    // Only an eligible measure end spends a count; Play's first downbeat never shifts.
+    if (boundary === undefined) {
+      boundary = this.playing ? null : 0;
+      if (this.playing && this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) <= 1e-9) boundary = this.transportBoundary;
+    }
+    this.patternShiftClock = {remaining:this.st ? this.st.patternShiftMeasures : 1,boundary};
+  }
+  applyPatternShift(k, boundary) {
+    const p = this.patternShiftClock;
+    if (!this.st.patternShift || !boundary || p.boundary === k) return;
+    p.boundary = k;
+    if (--p.remaining > 0) return;
+    p.remaining = this.st.patternShiftMeasures;
+    // Move the complete beat pattern only. Each destination keeps its instrument,
+    // mix, reverse/ping-pong controls and transport phase. The outer row wraps around.
+    const offset = this.st.patternShiftDirection === 'down' ? 7 : 1;
+    const tracks = this.st.tracks.map((_,t) => {
+      const source = this.st.tracks[(t+offset)%8];
+      return {steps:source.steps.slice(),len:source.len};
+    });
+    this.merge(this.st, tracks); this.rememberRandom(tracks);
+    this.port.postMessage({type:'patternShiftApplied',seq:this.randSeq,direction:this.st.patternShiftDirection,tracks});
+  }
   applyRandomPing(k) {
     const p = this.randomPing;
     if (!p || !this.boundary(k) || p.boundary === k) return;
@@ -979,6 +1019,7 @@ class FM8 extends AudioWorkletProcessor {
     this.port.postMessage({type:'randomPingApplied',id:p.id,mode:p.mode,phase,seq:this.randSeq,tracks,baseline:p.baseline});
   }
   fireStep(k) {
+    const shiftBoundary = this.boundary(k);
     if (this.delayReturn && this.boundary(k) && this.delayReturn.dir*(this.ev(k)-this.delayReturn.start) > 1e-9) this.reachDelayBoundary();
     this.recordTick(k);
     const st = this.st;
@@ -1015,6 +1056,7 @@ class FM8 extends AudioWorkletProcessor {
       }
     }
     this.applyRandomPing(k);
+    this.applyPatternShift(k, shiftBoundary);
     const mixCycle=this.patternCycle();
     if (this.evolutionCycle) this.evolutionCycle.length = mixCycle;
     const patternBoundary=(((k-this.patternOrigin)%mixCycle)+mixCycle)%mixCycle===0;
@@ -1303,7 +1345,7 @@ function defaultKit() {
       len: 7, steps: pat('3000000') }),
   ];
 }
-const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, randomSoundsMeasures: 1, randomBeatsMeasures: 1, randomBothMeasures: 1, randomPingDivisorHold: false, evolutionPingPong: false, evolutionMeasures: 1, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
+const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, patternShift: false, patternShiftDirection: 'up', patternShiftMeasures: 1, randomSoundsMeasures: 1, randomBeatsMeasures: 1, randomBothMeasures: 1, randomPingDivisorHold: false, evolutionPingPong: false, evolutionMeasures: 1, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
 let state = loadLocal() || Object.assign({}, DEFAULTS, { tracks: defaultKit() });
 let delayReturning = false, delayHolding = false, delayTarget = 1, delayUiPaint = 0;
 let sel = 0, wild = 35, density = 45, clip = null;
@@ -1322,6 +1364,9 @@ function normalize(s) {
   const escKnown = !!s.escDefaultV1;
   const o = Object.assign({}, DEFAULTS, s);
   o.transportPingPong = s.transportPingPong === true;
+  o.patternShift = s.patternShift === true;
+  o.patternShiftDirection = s.patternShiftDirection === 'down' ? 'down' : 'up';
+  o.patternShiftMeasures = [1,2,3,4].includes(s.patternShiftMeasures) ? s.patternShiftMeasures : 1;
   o.randomSoundsMeasures = [1,2,3,4].includes(s.randomSoundsMeasures) ? s.randomSoundsMeasures : 1;
   o.randomBeatsMeasures = [1,2,3,4].includes(s.randomBeatsMeasures) ? s.randomBeatsMeasures : 1;
   o.randomBothMeasures = [1,2,3,4].includes(s.randomBothMeasures) ? s.randomBothMeasures : 1;
@@ -1417,6 +1462,7 @@ function prepareAudio() {
       else if (d.type === 'divisionApplied') { state.spb = d.value; state.divisionSeq = d.seq; pendingDivision = null; paintDivision(); renderSeq(); saveLocal(); }
       else if (d.type === 'applied') landPend(d);
       else if (d.type === 'randomPingApplied') landRandomPing(d);
+      else if (d.type === 'patternShiftApplied') landPatternShift(d);
       else if (d.type === 'randomPingStopped' && randomPing?.id === d.id) stopRandomPing();
       else if (d.type === 'rev') { state.tracks[d.t].rev = d.rev; revArm[d.t] = false; paintRev(d.t); saveLocal(); }
       else if (d.type === 'flipped') landFlip(d);
@@ -1741,6 +1787,7 @@ function renderHeader() {
   seg($('#os'), [[1, '1\u00d7'], [2, '2\u00d7'], [4, '4\u00d7']], () => state.os, v => { state.os = v; sync(); setTimeout(fmtInfo, 30); });
   paintExportControls();
   paintDelayControls();
+  paintPatternShift();
 }
 
 /* ---------- sequencer ---------- */
@@ -2681,6 +2728,47 @@ function renderVMode() {
 }
 const effCut = tr => state.voiceMode === 'track' ? tr.cut : state.voiceMode === 'cut';
 $('#clear').onclick = () => { stopRandomPing(); pushUndo(); state.tracks.forEach(t => t.steps.fill(0)); renderAll(); };
+function paintPatternShift() {
+  const measures = state.patternShiftMeasures;
+  for (const [id, direction] of [['#patternShift', 'up'], ['#patternShiftDown', 'down']]) {
+    const b = $(id), on = state.patternShift && state.patternShiftDirection === direction;
+    b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    b.title = 'Shift patterns ' + direction + ' one track every ' + measures + ' measure' + (measures === 1 ? '' : 's') + '. ' + (direction === 'up' ? 'Track 1 wraps to track 8.' : 'Track 8 wraps to track 1.') + ' Steps and pattern lengths move; instrument settings stay in place. Selecting the other arrow changes direction and starts a new count.';
+  }
+  for (const button of document.querySelectorAll('[data-shift-measures]')) {
+    const n = +button.dataset.shiftMeasures, on = n === measures;
+    button.classList.toggle('on', on); button.setAttribute('aria-pressed', on);
+    button.title = 'Shift at the end of every ' + n + ' measure' + (n === 1 ? '' : 's') + '. Changing the interval starts a new count.';
+  }
+}
+function sendPatternShift() {
+  if (node) node.port.postMessage({type:'patternShiftControl',on:state.patternShift,direction:state.patternShiftDirection,measures:state.patternShiftMeasures});
+}
+function landPatternShift(d) {
+  if (!Number.isSafeInteger(d.seq) || d.seq <= engineRand) return;
+  d.tracks.forEach((pattern, t) => {
+    state.tracks[t].steps = pattern.steps.slice(); state.tracks[t].len = pattern.len;
+  });
+  engineRand = state.randSeq = d.seq;
+  renderSeq(); paintLengthDivision(); saveLocal();
+  pulseButton($(d.direction === 'down' ? '#patternShiftDown' : '#patternShift'));
+}
+function togglePatternShift(direction) {
+  if (!state.patternShift) pushUndo();
+  state.patternShift = !(state.patternShift && state.patternShiftDirection === direction);
+  state.patternShiftDirection = direction;
+  sendPatternShift(); paintPatternShift(); saveLocal();
+}
+$('#patternShift').onclick = () => togglePatternShift('up');
+$('#patternShiftDown').onclick = () => togglePatternShift('down');
+for (const b of document.querySelectorAll('[data-shift-measures]')) b.onclick = () => {
+  const measures = +b.dataset.shiftMeasures;
+  if (state.patternShiftMeasures === measures) return;
+  state.patternShiftMeasures = measures;
+  sendPatternShift(); paintPatternShift(); saveLocal();
+};
+paintPatternShift();
+
 knob($('#kWild'), 'Wild', () => wild, v => { wild = v; refreshRandomPing(); }, v => v + '%');
 knob($('#kDens'), 'Density', () => density, v => { density = v; refreshRandomPing(); }, v => v + '%');
 function paintDelayControls() {
@@ -3002,7 +3090,7 @@ $('#kitFile').onchange = async e => {
 /* ---------- full setup files ---------- */
 const SESSION_FORMAT = 'percussion-synthesizer-session';
 const SESSION_GLOBALS = ['bpm', 'bpmSnap', 'swing', 'spb', 'master', 'os', 'voiceMode',
-  'autoReturn', 'lengthDivisor', 'transportPingPong', 'randomSoundsMeasures', 'randomBeatsMeasures', 'randomBothMeasures', 'randomPingDivisorHold', 'evolutionPingPong', 'evolutionMeasures', 'decayMultiplier', 'decayAutoReturn'];
+  'autoReturn', 'lengthDivisor', 'transportPingPong', 'patternShift', 'patternShiftDirection', 'patternShiftMeasures', 'randomSoundsMeasures', 'randomBeatsMeasures', 'randomBothMeasures', 'randomPingDivisorHold', 'evolutionPingPong', 'evolutionMeasures', 'decayMultiplier', 'decayAutoReturn'];
 const copyJSON = value => JSON.parse(JSON.stringify(value));
 function captureSession() {
   // Include the current point, so Devolution can still retrace the saved route.
@@ -3053,6 +3141,9 @@ function validateSession(file) {
     decayMultiplier: number(s.decayMultiplier, 0.1, 1), tracks: array(s.tracks, 8).map(track)
   });
   for (const k of ['autoReturn', 'transportPingPong', 'randomPingDivisorHold', 'decayAutoReturn']) st[k] = bool(s[k]);
+  st.patternShift = s.patternShift === undefined ? false : bool(s.patternShift);
+  st.patternShiftDirection = s.patternShiftDirection === undefined ? 'up' : choice(s.patternShiftDirection, ['up', 'down']);
+  st.patternShiftMeasures = s.patternShiftMeasures === undefined ? 1 : choice(s.patternShiftMeasures, [1,2,3,4]);
   // Version 1 files from before evolution ping-pong remain compatible.
   st.evolutionPingPong = s.evolutionPingPong === undefined ? false : bool(s.evolutionPingPong);
   st.evolutionMeasures = s.evolutionMeasures === undefined ? 1 : choice(s.evolutionMeasures, [1,2,3,4]);
