@@ -263,6 +263,7 @@ function cleanState(s) {
 class Voice {
   constructor() {
     this.on = false; this.fading = false; this.g = 1; this.gd = 0;
+    this.lastSample = 0; this.stealFrom = 0; this.stealLeft = 0; this.stealFrames = 1;
     this.t = 0; this.cr = 0; this.tr = 0; this.vel = 1; this.age = 0; this.amp = 1;
     this.rp = 1; this.ri = 1; this.end = 0; this.decayMultiplier = 1;
     this.ph = new Float64Array(4); this.inc = new Float64Array(4);
@@ -270,7 +271,7 @@ class Voice {
     this.og = new Float64Array(4); this.o = new Float64Array(4);
     this.cur = new Float64Array(4); this.y1 = new Float64Array(4); this.y2 = new Float64Array(4);
     this.m = new Float64Array(16);
-    this.timbreSmooth = false; this.sharedMatrix = false; this.matrixScale = 1;
+    this.timbreSmooth = false; this.decaySmooth = false; this.sharedMatrix = false; this.matrixScale = 1;
   }
 }
 
@@ -315,8 +316,16 @@ class FM8 extends AudioWorkletProcessor {
     this.vox = [];
     for (let t = 0; t < 8; t++) { const a = []; for (let q = 0; q < MAXV; q++) a.push(new Voice()); this.vox.push(a); }
     this.gL = new Float64Array(8); this.gR = new Float64Array(8);
+    this.gainTargetL = new Float64Array(8); this.gainTargetR = new Float64Array(8);
+    this.gainDeltaL = new Float64Array(8); this.gainDeltaR = new Float64Array(8);
+    this.masterGain = 0; this.masterTarget = 0; this.masterDelta = 0;
+    this.gainFrames = 0; this.gainReady = false;
     this.dcx = [0, 0]; this.dcy = [0, 0]; this.dcR = 1 - TAU * 5 / sampleRate;
     this.clock = 0; this.ageCtr = 0;
+    this.preL = this.preR = 0;
+    this.transitionL = this.transitionR = 0;
+    this.outputTransition = 0; this.outputTransitionWait = 0;
+    this.outputTransitionFrames = Math.max(1, Math.round(sampleRate * 0.005));
     this.cnt = new Int32Array(8); this.total = 0; this.quiet = 0; this.blk = 0; this.errAt = -1e9;
     this.playing = false; this.pos = 0; this.nk = 0; this.pk = 0; this.fired = 0; this.flipArm = false; this.flips = 0;
     this.recording = null;
@@ -355,6 +364,10 @@ class FM8 extends AudioWorkletProcessor {
     this.driveWet = new Float64Array(8); this.driveWetTarget = new Float64Array(8); this.driveWetDelta = new Float64Array(8);
     this.matrixCurrent = new Float64Array(128); this.matrixTarget = new Float64Array(128); this.matrixDelta = new Float64Array(128);
     this.matrixIndices = new Uint8Array(128); this.matrixCount = 0;
+    this.outputLevelOwners = []; this.outputLevelKeys = [];
+    this.outputLevelTarget = new Float64Array(64); this.outputLevelCurrent = new Float64Array(64);
+    this.outputLevelIncoming = new Float64Array(64); this.outputLevelDelta = new Float64Array(64);
+    this.outputLevelIndices = new Uint8Array(64); this.outputLevelCount = 0; this.outputLevelFrames = 0;
     if (o.state) this.setState(o.state);
     this.port.onmessage = (e) => this.onMsg(e.data);
   }
@@ -366,6 +379,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.randomPing) this.port.postMessage({type:'randomPingStopped',id:this.randomPing.id});
     this.randomPing = null;
     this.killAll();
+    this.outputTransition = this.outputTransitionWait = 0; this.preL = this.preR = 0;
     this.dcx[0] = this.dcx[1] = this.dcy[0] = this.dcy[1] = 0;
     this.fL.fill(0); this.fR.fill(0); this.dlL.fill(0); this.dlR.fill(0);
     this.qH = this.qT = 0; this.li = 0; this.lg = 1; this.quiet = 0;
@@ -373,6 +387,7 @@ class FM8 extends AudioWorkletProcessor {
   }
   resetSync() {
     this.cancelTimbre();
+    this.outputLevelFrames = this.outputLevelCount = 0;
     // A freshly loaded kit starts a new history: forget every queued change and every sequence tally.
     this.mixSeq = this.undoSeq = this.lengthSeq = this.divisionSeq = this.randSeq = 0;
     this.lastMix = this.lastUndo = this.lastPend = null; this.lastLengthDivisor = 1; this.lastDivision = null;
@@ -513,16 +528,81 @@ class FM8 extends AudioWorkletProcessor {
       for (let n=0;n<this.matrixCount;n++) { const i=this.matrixIndices[n]; this.matrixCurrent[i]=this.matrixTarget[i]; }
     }
   }
+  beginOutputTransition() {
+    // Bridge a filter reset or explicit silence command from the last rendered level.
+    // The short fade is before DC removal and limiting, and never feeds back into voices.
+    this.transitionL = this.preL; this.transitionR = this.preR;
+    this.outputTransition = this.outputTransitionFrames;
+    this.outputTransitionWait = 0;
+  }
+  setOutputLevels(s, smooth = true) {
+    // Operator Level and carrier Output sit outside Evolution's 344 fields. Keep
+    // their CURRENT values in the kit so envelope lifetime tests also see the fade.
+    const owners=this.outputLevelOwners, keys=this.outputLevelKeys;
+    const incoming=this.outputLevelIncoming, current=this.outputLevelCurrent;
+    let i=0;
+    for (const tr of s.tracks) {
+      for (const op of tr.ops) incoming[i++]=op.lvl;
+      for (let j=0;j<4;j++) incoming[i++]=tr.out[j];
+    }
+    const continuous=smooth && owners.length===64;
+    let changed=false;
+    if (continuous) for (let j=0;j<64;j++) {
+      current[j]=owners[j][keys[j]];
+      if (incoming[j]!==this.outputLevelTarget[j]) changed=true;
+    }
+    if (!continuous) {
+      this.outputLevelTarget.set(incoming); current.set(incoming);
+      this.outputLevelFrames=this.outputLevelCount=0;
+    } else if (changed) {
+      const frames=Math.max(1,Math.round(sampleRate*0.020));
+      this.outputLevelCount=0;
+      for (let j=0;j<64;j++) {
+        this.outputLevelTarget[j]=incoming[j];
+        this.outputLevelDelta[j]=(incoming[j]-current[j])/frames;
+        if (incoming[j]!==current[j]) this.outputLevelIndices[this.outputLevelCount++]=j;
+      }
+      this.outputLevelFrames=this.outputLevelCount ? frames : 0;
+    }
+    // A UI snapshot replaces track/operator objects. Rebind without restarting an
+    // unchanged ramp, and never let an old owner write into a subsequently loaded kit.
+    owners.length=keys.length=0;
+    for (const tr of s.tracks) {
+      for (const op of tr.ops) { owners.push(op); keys.push('lvl'); }
+      for (let j=0;j<4;j++) { owners.push(tr.out); keys.push(j); }
+    }
+    for (let j=0;j<64;j++) owners[j][keys[j]]=current[j];
+  }
+  advanceOutputLevels() {
+    const remains=--this.outputLevelFrames, owners=this.outputLevelOwners, keys=this.outputLevelKeys;
+    for (let n=0;n<this.outputLevelCount;n++) {
+      const i=this.outputLevelIndices[n];
+      owners[i][keys[i]]=remains ? owners[i][keys[i]]+this.outputLevelDelta[i] : this.outputLevelTarget[i];
+    }
+    if (!remains) this.outputLevelCount=0;
+  }
   setOS(os) {
     os = Math.max(1, Math.min(4, os | 0));
     if (os === this.os) return;
     if (this.recording) this.failRecording('Recording cancelled: oversampling changed.');
+    const previousOS = this.os;
+    if (previousOS) this.beginOutputTransition();
     this.os = os; this.osr = sampleRate * os; this.fir = makeFir(os);
     const n = this.fir ? this.fir.length : 1;
     this.taps = n; this.fL = new Float64Array(n * 2); this.fR = new Float64Array(n * 2); this.fi = 0;
-    this.killAll();
+    if (previousOS && this.fir) this.outputTransitionWait = Math.ceil(n / os);
+    // Preserve each sounding tail's age, phase and remaining fade duration across rates.
+    if (previousOS) for (const vs of this.vox) for (const v of vs) if (v.on) {
+      v.t *= os / previousOS;
+      v.gd *= previousOS / os;
+      if (v.stealLeft) {
+        v.stealFrames = Math.max(1, Math.ceil(v.stealFrames * os / previousOS));
+        v.stealLeft = Math.max(1, Math.ceil(v.stealLeft * os / previousOS));
+      }
+      v.cr = 0; v.timbreSmooth = true;
+    }
   }
-  setState(s) {
+  setState(s, smoothTimbre = true) {
     cleanState(s);
     const shiftChanged = !this.st || s.patternShift !== this.st.patternShift || s.patternShiftMeasures !== this.st.patternShiftMeasures || s.patternShiftDirection !== this.st.patternShiftDirection;
     // a bar-synced flip may have happened after the UI sent this state: keep the engine's direction
@@ -551,30 +631,43 @@ class FM8 extends AudioWorkletProcessor {
     // An unrelated UI sync must not jump to the end of an in-flight timbre ramp.
     // Sequence reconciliation above already protects newer sounds. Beat-only changes
     // may advance randSeq while leaving every timbre target unchanged.
-    let keepTimbre = this.timbreTicks>0;
-    if (keepTimbre) {
+    const hadTimbre = this.timbreOwners.length === 344 && smoothTimbre;
+    let keepTimbre = hadTimbre && this.timbreTicks>0, retargetTimbre = false;
+    if (hadTimbre) {
       this.readTimbre(s,this.timbreIncoming);
-      for (let i=0;i<344;i++) if (this.timbreIncoming[i]!==this.timbreTarget[i]) { keepTimbre=false; break; }
+      for (let i=0;i<344;i++) {
+        this.timbreCurrent[i]=this.timbreOwners[i][this.timbreKeys[i]];
+        if (this.timbreIncoming[i]!==this.timbreTarget[i]) keepTimbre=false;
+        if (this.timbreIncoming[i]!==this.timbreCurrent[i]) retargetTimbre=true;
+      }
     }
-    if (keepTimbre) for (let i=0;i<344;i++) this.timbreCurrent[i]=this.timbreOwners[i][this.timbreKeys[i]];
-    else this.cancelTimbre();
+    if (!keepTimbre) this.cancelTimbre();
+    this.setOutputLevels(s, smoothTimbre);
     this.st = s;
     if (shiftChanged) this.resetPatternShift();
-    this.bindTimbre(keepTimbre);
-    if (keepTimbre) for (let i=0;i<344;i++) this.timbreOwners[i][this.timbreKeys[i]]=this.timbreCurrent[i];
+    // Manual controls use the same continuous path as Evolution. Rebind replacement
+    // objects without snapping either the effective matrix or Drive's bypass state.
+    const continuous = keepTimbre || retargetTimbre;
+    this.bindTimbre(continuous);
+    if (continuous) {
+      for (let i=0;i<344;i++) this.timbreOwners[i][this.timbreKeys[i]]=this.timbreCurrent[i];
+      if (!keepTimbre) this.applyTimbre({v:this.timbreIncoming,rs:this.randSeq,us:this.undoSeq});
+    }
     if (this.evolutionCycle) this.evolutionCycle.length = this.patternCycle();
     this.setOS(s.os || 2);
     this.setGains(s);
     this.retargetDelayReturn();
   }
   merge(s, pend) {
-    let soundChanged=false;
+    let soundChanged=false, outputLevelsChanged=false;
     for (let t = 0; t < 8; t++) if (pend[t]) {
+      if (["ops","out"].some(key=>Object.prototype.hasOwnProperty.call(pend[t],key))) outputLevelsChanged=true;
       if (['decS','idx','drive','ops','mx'].some(key=>Object.prototype.hasOwnProperty.call(pend[t],key))) soundChanged=true;
       Object.assign(s.tracks[t], JSON.parse(JSON.stringify(pend[t])));
     }
     // Beat-only ping-pong leaves the current timbre ramp running.
     if (soundChanged && s===this.st) { this.cancelTimbre(); this.bindTimbre(); }
+    if (outputLevelsChanged && s===this.st) this.setOutputLevels(s, false);
   }
   rememberRandom(tracks) {
     this.lastPend = tracks; this.randSeq++; this.lastRandUndoSeq = this.undoSeq;
@@ -584,12 +677,38 @@ class FM8 extends AudioWorkletProcessor {
     }
   }
   setGains(s) {
+    let changed = s.master !== this.masterTarget;
     for (let t = 0; t < 8; t++) {
       const tr = s.tracks[t];
       const p = Math.max(-1, Math.min(1, tr.pan));
       const ang = (p + 1) * Math.PI / 4;
-      this.gL[t] = Math.cos(ang) * Math.SQRT2 * tr.lvl;
-      this.gR[t] = Math.sin(ang) * Math.SQRT2 * tr.lvl;
+      const l = Math.cos(ang) * Math.SQRT2 * tr.lvl;
+      const r = Math.sin(ang) * Math.SQRT2 * tr.lvl;
+      if (l !== this.gainTargetL[t] || r !== this.gainTargetR[t]) changed = true;
+      this.gainTargetL[t] = l; this.gainTargetR[t] = r;
+    }
+    this.masterTarget = s.master;
+    if (!this.gainReady) {
+      this.gL.set(this.gainTargetL); this.gR.set(this.gainTargetR);
+      this.masterGain = this.masterTarget; this.gainReady = true;
+    } else if (changed) {
+      // An 8 ms, sample-by-sample ramp suppresses fader and pan zipper noise.
+      // Unrelated state messages do not restart a ramp that is already underway.
+      this.gainFrames = Math.max(1, Math.round(sampleRate * 0.008));
+      this.masterDelta = (this.masterTarget - this.masterGain) / this.gainFrames;
+      for (let t=0;t<8;t++) {
+        this.gainDeltaL[t] = (this.gainTargetL[t] - this.gL[t]) / this.gainFrames;
+        this.gainDeltaR[t] = (this.gainTargetR[t] - this.gR[t]) / this.gainFrames;
+      }
+    }
+  }
+  advanceGains() {
+    if (--this.gainFrames) {
+      this.masterGain += this.masterDelta;
+      for (let t=0;t<8;t++) { this.gL[t] += this.gainDeltaL[t]; this.gR[t] += this.gainDeltaR[t]; }
+    } else {
+      this.masterGain = this.masterTarget;
+      this.gL.set(this.gainTargetL); this.gR.set(this.gainTargetR);
     }
   }
   start() {
@@ -622,9 +741,9 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'state') this.setState(d.state);
     else if (d.type === 'loadKit') {
       this.failRecording('Recording cancelled: kit changed.');
-      if (d.sessionId) { this.playing = false; this.flips = 0; this.killAll(); this.pending.length = 0; }
-      this.resetSync(); this.setState(d.state); if (this.playing) this.start();
-      if (d.sessionId) this.port.postMessage({type:'sessionLoaded',id:d.sessionId});
+      if (d.sessionId) { this.playing = false; this.flips = 0; this.beginOutputTransition(); this.killAll(); this.pending.length = 0; }
+      this.resetSync(); this.setState(d.state, false); if (this.playing) this.start();
+      if (d.sessionId || d.loadId) this.port.postMessage({type:'sessionLoaded',id:d.sessionId || d.loadId});
       this.reportDelay();
     }
     else if (d.type === 'delayControl') this.controlDelay(d);
@@ -672,7 +791,7 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'division') this.divisionPending = d.value === null ? null : N(d.value, 4, 0.01, 8);
     else if (d.type === 'pending') { this.pend = d.tracks || null; if (this.pend) this.randomPing=null; }
     else if (d.type === 'trig') this.pending.push(d);
-    else if (d.type === 'panic') this.killAll();
+    else if (d.type === 'panic') { this.beginOutputTransition(); this.killAll(); }
   }
   fade(v, ms) {
     if (!v.on || v.fading) return;
@@ -707,14 +826,27 @@ class FM8 extends AudioWorkletProcessor {
         this.fade(vs[si], 3);
         const tmp = vs[si]; vs[si] = vs[ri]; vs[ri] = tmp;
         v = vs[si];
+      } else if (ri >= 0) {
+        // Cut/choke can leave all regular slots fading. Move one of those
+        // tails into the idle reserve and keep new hits in regular slots.
+        let fading = 0;
+        for (let q = 1; q < SOFT; q++) if (vs[q].age < vs[fading].age) fading = q;
+        const tmp = vs[fading]; vs[fading] = vs[ri]; vs[ri] = tmp;
+        v = vs[fading];
       } else {
         v = vs[0]; for (const x of vs) if (x.age < v.age) v = x;   // last resort: nothing free anywhere
       }
     }
+    // If every slot is occupied, preserve the last audible value while the new
+    // hit fades in over 3 ms. Repeated steals replace this anchor, never add it.
+    const stolen = v.on;
+    v.stealFrom = stolen ? v.lastSample : 0;
+    v.stealLeft = stolen ? Math.max(1, Math.round(this.osr * 0.003)) : 0;
+    v.stealFrames = v.stealLeft || 1;
     if (!v.on) { this.cnt[ti]++; this.total++; }
     v.on = true; v.fading = false; v.g = 1; v.gd = 0; v.t = 0; v.cr = 0; v.tr = ti; v.vel = vel;
     v.age = this.ageCtr++;
-    v.timbreSmooth = false; v.sharedMatrix = false;
+    v.timbreSmooth = false; v.decaySmooth = false; v.sharedMatrix = false;
     v.decayMultiplier = st.decayMultiplier;
     v.rp = Math.pow(2, (Math.random() * 2 - 1) * tr.rndPitch / 1200);
     v.ri = Math.max(0, 1 + (Math.random() * 2 - 1) * tr.rndTone);
@@ -728,8 +860,11 @@ class FM8 extends AudioWorkletProcessor {
     const t0 = v.t * msPer, t1 = (v.t + CR) * msPer;
     // Retain one final handoff interval after a ramp completes. New attacks and static kits
     // keep the original envelope path; sounding tails never jump to a recalculated level.
-    const ramping = this.timbreTicks>0 || v.timbreSmooth, smooth = v.t>0 && ramping;
+    const ramping = this.timbreTicks>0 || v.timbreSmooth;
+    const decayMoving = v.decayMultiplier !== this.st.decayMultiplier;
+    const smooth = v.t>0 && (ramping || decayMoving || v.decaySmooth);
     v.sharedMatrix = ramping; v.timbreSmooth = this.timbreTicks>0;
+    v.decaySmooth = decayMoving;
     // New hits use the selected scale immediately; live tails slew over at most 8 ms.
     const decayStep = 0.9 * CR / (this.osr * 0.008);
     v.decayMultiplier += Math.max(-decayStep, Math.min(decayStep, this.st.decayMultiplier - v.decayMultiplier));
@@ -746,10 +881,11 @@ class FM8 extends AudioWorkletProcessor {
       // An envelope shortened past its age must first reach zero continuously.
       let audible=false;
       if (smooth) for (let i=0;i<4;i++) if (tr.out[i]>0 && Math.abs(v.env[i]*v.og[i])>1e-9) { audible=true; break; }
-      if (!audible) { this.kill(v); return; }
+      if (!audible && !v.stealLeft) { this.kill(v); return; }
     }
-    const lt = (t) => { const k = Math.min(n - 1, Math.floor(t / sp)); const tl = t - k * sp; return k < n - 1 ? tl * 3 : tl; };
-    const l0 = lt(t0), l1 = lt(t1);
+    const k0 = Math.min(n - 1, Math.floor(t0 / sp)), k1 = Math.min(n - 1, Math.floor(t1 / sp));
+    const tl0 = t0 - k0 * sp, tl1 = t1 - k1 * sp;
+    const l0 = k0 < n - 1 ? tl0 * 3 : tl0, l1 = k1 < n - 1 ? tl1 * 3 : tl1;
     const vel = v.vel;
     const vi = (1 - tr.velIdx * (1 - vel)) * tr.idx * v.ri;
     v.matrixScale = (1 - tr.velIdx * (1 - vel)) * v.ri;
@@ -796,6 +932,12 @@ class FM8 extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) { y2[i] = y1[i]; y1[i] = cur[i]; }
     const o = v.o;
     let s = (cur[0] * o[0] + cur[1] * o[1] + cur[2] * o[2] + cur[3] * o[3]) * v.amp * v.g;
+    if (v.stealLeft > 0) {
+      const weight = v.stealLeft / v.stealFrames;
+      s = v.stealFrom * weight * v.g + s * (1 - weight);
+      v.stealLeft--;
+    }
+    v.lastSample = s;
     if (v.fading) { v.g -= v.gd; if (v.g <= 0) { v.g = 0; this.kill(v); } }
     v.t++;
     return s;
@@ -898,7 +1040,9 @@ class FM8 extends AudioWorkletProcessor {
   patternCycle() {
     // The measure clock follows STEPS, independently of any track's playback direction.
     // Internal sub-ticks retain exact fractional divisions without counting ping-pong bounces.
-    return Math.max(...this.st.tracks.map(t=>Math.max(1,Math.min(64,t.len))));
+    let cycle = 1;
+    for (let t = 0; t < this.st.tracks.length; t++) cycle = Math.max(cycle, Math.max(1, Math.min(64, this.st.tracks[t].len)));
+    return cycle;
   }
   alignDividedTracks(k) {
     const d=this.st.lengthDivisor||1;
@@ -936,7 +1080,7 @@ class FM8 extends AudioWorkletProcessor {
   }
   captureOversampled(left,right,sub) {
     const r=this.recording;if(!r||r.factor!==4)return;
-    if(!r.output.process(left*this.st.master,right*this.st.master)){this.failRecording('Recording interrupted: non-finite audio.');return;}
+    if(!r.output.process(left*this.masterGain,right*this.masterGain)){this.failRecording('Recording interrupted: non-finite audio.');return;}
     this.captureOutput(r.output.L,r.output.R,this.clock*4+sub);
   }
   captureOutput(left,right,frame=this.clock) {
@@ -1030,7 +1174,7 @@ class FM8 extends AudioWorkletProcessor {
         const u=this.undoPending;this.undoPending=null;this.lastUndo=u;this.undoSeq++;
         this.randomChanges = Array.from({length:8}, () => ({}));
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
-        this.cancelTimbre();this.bindTimbre();
+        this.cancelTimbre();this.bindTimbre();this.setOutputLevels(st, false);
         this.pend=null;this.lengthPending=null;this.returnTicks=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
         for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
@@ -1130,8 +1274,10 @@ class FM8 extends AudioWorkletProcessor {
     if (this.pending.length && this.st.voiceMode === 'cut') this.cutAll();
     while (this.pending.length) { const p = this.pending.shift(); this.trigger(p.track, p.vel); }
     const os = this.os, fir = this.fir, taps = this.taps, fL = this.fL, fR = this.fR;
-    const mg = this.st.master, dcR = this.dcR;
+    const dcR = this.dcR;
     for (let f = 0; f < L.length; f++) {
+      if (this.gainFrames) this.advanceGains();
+      if (this.outputLevelFrames) this.advanceOutputLevels();
       if (this.timbreTicks) this.advanceTimbre();
       if (this.playing) this.advance();
       let yl, yr;
@@ -1155,8 +1301,15 @@ class FM8 extends AudioWorkletProcessor {
       } else {
         this.renderSub(); yl = this.sL; yr = this.sR;
       }
-      yl *= mg; yr *= mg;
+      yl *= this.masterGain; yr *= this.masterGain;
       if (yl - yl !== 0 || yr - yr !== 0) { this.recover('non-finite audio'); yl = 0; yr = 0; }
+      if (this.outputTransition) {
+        // Let the replacement FIR fill before exposing its startup transient.
+        const old = this.outputTransitionWait > 0 ? (this.outputTransitionWait--, 1) : this.outputTransition-- / this.outputTransitionFrames;
+        yl += (this.transitionL - yl) * old;
+        yr += (this.transitionR - yr) * old;
+      }
+      this.preL = yl; this.preR = yr;
       // DC blocker (5 Hz)
       const ol = yl - this.dcx[0] + dcR * this.dcy[0]; this.dcx[0] = yl; this.dcy[0] = (ol > 1e-25 || ol < -1e-25) ? ol : 0;
       const or = yr - this.dcx[1] + dcR * this.dcy[1]; this.dcx[1] = yr; this.dcy[1] = (or > 1e-25 || or < -1e-25) ? or : 0;
@@ -1290,13 +1443,13 @@ function mkInst(o) {
     drive: 0, rndPitch: 0, rndTone: 0, lvl: 0.8, strikes: 1, space: 10, pan: 0, fade: 4, choke: 0,
     cut: true, mute: false, solo: false, rev: false, pp: false, len: 16, steps: null, mx: null, out: [1, 0, 0, 0], ops: null
   }, o || {});
-  // kit files are untrusted: force every number finite and every array to its full shape
-  INST_SPEC.forEach(s => { t[s.k] = fin(t[s.k], s.d); });
+  // Imported values must fit the controls' ranges before reaching exponential DSP math.
+  INST_SPEC.forEach(s => { const v = clamp(fin(t[s.k], s.d), s.min, s.max); t[s.k] = s.int ? Math.round(v) : v; });
   t.len = clamp(Math.round(fin(t.len, 16)), 1, 64);
   t.mx = [0, 1, 2, 3].map(i => [0, 1, 2, 3].map(j => clamp(fin(t.mx && t.mx[i] && t.mx[i][j], 0), 0, 12)));
   t.out = [0, 1, 2, 3].map(i => clamp(fin(t.out && t.out[i], i === 0 ? 1 : 0), 0, 1));
   t.ops = (Array.isArray(t.ops) ? t.ops : []).slice(0, 4).map(mkOp); while (t.ops.length < 4) t.ops.push(mkOp({ lvl: 0 }));
-  t.ops.forEach(op => OP_SPEC.forEach(s => { op[s.k] = fin(op[s.k], s.d); }));
+  t.ops.forEach(op => OP_SPEC.forEach(s => { const v = clamp(fin(op[s.k], s.d), s.min, s.max); op[s.k] = s.int ? Math.round(v) : v; }));
   t.steps = (Array.isArray(t.steps) ? t.steps : []).slice(0, 64).map(x => clamp(Math.round(fin(x, 0)), 0, 4));
   while (t.steps.length < 64) t.steps.push(0);
   return t;
@@ -3080,7 +3233,10 @@ $('#kitFile').onchange = async e => {
     // a new kit starts a new history: every tally and queue restarts, in the page and in the engine
     state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = 0;
     engineMixSeq = engineLengthSeq = 0; engineRand = 0; state.flipSeq = engineFlips;
-    if (node) node.port.postMessage({ type: 'loadKit', state });
+    // Ignore old automation acknowledgements until this kit reaches the audio thread.
+    // loadId acknowledges replacement without stopping a running transport.
+    sessionLoading = node ? ++sessionLoadCounter : 0;
+    if (node) node.port.postMessage({ type: 'loadKit', state, loadId: sessionLoading });
     clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); paintEvolution(); paintRandomPing(); $('#xstat').textContent = '';
   }
   catch (err) { $('#xstat').textContent = 'not a kit file'; }
