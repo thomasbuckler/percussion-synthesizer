@@ -72,7 +72,7 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .seqcontent{width:max-content;min-width:100%}
 .seqtop{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-bottom:12px}
 .rows{padding-block:6px 4px}
-.row{display:flex;align-items:center;gap:6px;min-width:max-content;padding-block:4px}
+.row{display:flex;align-items:center;gap:0;min-width:max-content;padding-block:4px}
 .row .name{width:104px;text-align:left;overflow:hidden;text-overflow:ellipsis}
 .row .name.hit{background:var(--fg);color:var(--bg)}
 .row .name.on.hit{background:var(--bg);color:var(--fg)}
@@ -83,11 +83,16 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .random-pp svg{flex:none}
 .row>button,.row>.num{flex-shrink:0}
 .row .step-rotate{height:28px;display:inline-flex;align-items:center;justify-content:center}
-.row .step-rotate.left{margin-left:8px}
-.row .step-rotate+.steps{margin-left:0}
-.steps{display:flex;margin-left:8px;touch-action:pan-x pan-y;user-select:none;-webkit-user-select:none}
+/* A continuous strip: row controls, arrows and steps share single borders. */
+.row>button,.row>.num,.row .sm.pp{height:28px}
+.row>button+button,.row>.num,.row>.step-rotate{margin-left:-1px}
+.row .num span,.seqtop .num span{display:flex;align-items:center;justify-content:center}
+.seqtop .grp{gap:0}
+.seqtop .grp>.cap{margin-right:8px}
+.seqtop .num,.seqtop button{height:24px}
+#lengthDivide,#lengthDivide+.seg{margin-left:-1px}
+.steps{display:flex;margin-left:-1px;touch-action:pan-x pan-y;user-select:none;-webkit-user-select:none}
 .cell{flex:0 0 var(--cw);height:28px;border:1px solid var(--fg);margin-left:-1px;position:relative;cursor:pointer;background:var(--bg)}
-.cell.g{margin-left:5px}
 .cell:first-child{margin-left:0}
 .cell b{position:absolute;left:0;right:0;bottom:0;background:var(--fg);pointer-events:none}
 .cell.now::after{content:"";position:absolute;left:-1px;right:-1px;height:1px;background:var(--fg);bottom:-5px}
@@ -154,7 +159,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><button id="undo">Undo</button></div>
   <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
   <div class="spacer"></div>
-  <div class="grp"><div class="seg"><button id="evolve" aria-pressed="false">Evolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div><div id="kEvolve" class="knob" title="Evolution and devolution speed"></div><div class="seg" id="evolutionLoop" role="group" aria-label="Automatic devolution"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolutionPing" class="random-pp" type="button" aria-label="Evolution and devolution ping-pong" aria-pressed="false"></button><button type="button" data-evolution-measures="1" aria-label="1 measure before devolution">1</button><button type="button" data-evolution-measures="2" aria-label="2 measures before devolution">2</button><button type="button" data-evolution-measures="3" aria-label="3 measures before devolution">3</button><button type="button" data-evolution-measures="4" aria-label="4 measures before devolution">4</button></div></div>
+  <div class="grp"><div class="seg"><button id="evolve" aria-pressed="false">Evolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div><div id="kEvolve" class="knob" title="Linear evolution and devolution speed: 50% runs at half the rate of 100%; 0% pauses sound changes."></div><div class="seg" id="evolutionLoop" role="group" aria-label="Automatic devolution"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolutionPing" class="random-pp" type="button" aria-label="Evolution and devolution ping-pong" aria-pressed="false"></button><button type="button" data-evolution-measures="1" aria-label="1 measure before devolution">1</button><button type="button" data-evolution-measures="2" aria-label="2 measures before devolution">2</button><button type="button" data-evolution-measures="3" aria-label="3 measures before devolution">3</button><button type="button" data-evolution-measures="4" aria-label="4 measures before devolution">4</button></div></div>
   <div class="grp"><span class="cap">Voices</span><div class="seg" id="vmode"></div></div>
 </section>
 
@@ -173,7 +178,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 
   <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
   <div class="spacer"></div>
-  <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
+  <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button><button id="defaultKit" title="Load the acoustic default sounds and mix, keeping your patterns and tempo. Undo restores the previous sounds.">Default</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
   <div class="grp"><div class="seg"><button id="saveAll" title="Save every sound, pattern, global control, automation setting, and WAV option.">Save All Parameters</button><button id="loadAll" title="Restore a full save, paused and ready to Play.">Load All</button></div><input type="file" id="sessionFile" accept=".json,application/json" hidden></div>
 </section>
 
@@ -1537,45 +1542,80 @@ function mkInst(o) {
 const pat = s => { const a = new Array(64).fill(0); for (let i = 0; i < s.length; i++) a[i] = +s[i]; return a; };
 
 function defaultKit() {
+  // Editable acoustic-style factory voices, built entirely from the existing four sine operators.
   return [
-    mkInst({ name: 'Kick', role: 'kick', note: 49, pAmt: 34, pDec: 42, pCurve: 0.7, drive: 0.22, lvl: 0.95, velIdx: 0.45, choke: 0, cut: true, fade: 6,
-      mx: mxOf({ '0,1': 1.5, '2,2': 2.6 }), out: [1, 0, 0.14, 0],
-      ops: [{ h: 10, d1: 110, brk: 0.45, d2: 520, curve: 0.45, vel: 0.3 }, { ratio: 1, d1: 16, brk: 0.08, d2: 40, lvl: 0.9, curve: 0.6 },
-        { fixed: true, hz: 3100, pe: 0, d1: 3, brk: 0, d2: 6, lvl: 0.9 }, { lvl: 0 }],
-      len: 7, steps: pat('4003000') }),
-    mkInst({ name: 'Snare', role: 'snare', note: 188, pAmt: 11, pDec: 18, pCurve: 0.6, drive: 0.12, lvl: 0.8, pan: -0.04,
-      mx: mxOf({ '0,1': 1.7, '2,2': 3.2, '2,3': 5.5 }), out: [0.75, 0, 0.72, 0],
-      ops: [{ d1: 55, brk: 0.3, d2: 150, vel: 0.4 }, { ratio: 1.48, d1: 36, brk: 0.2, d2: 70 },
-        { ratio: 9.3, d1: 70, brk: 0.35, d2: 210, curve: 0.6, pe: 0.2, vel: 0.6 }, { ratio: 17.1, d1: 110, brk: 0.5, d2: 200, pe: 0 }],
-      len: 7, steps: pat('0000402') }),
-    mkInst({ name: 'Closed hat', role: 'hat', note: 418, lvl: 0.42, pan: 0.18, choke: 1, velAmp: 0.85, rndTone: 0.12,
-      mx: mxOf({ '0,1': 5, '2,2': 3.4, '2,3': 5 }), out: [0.6, 0, 0.7, 0],
-      ops: [{ ratio: 7.13, d1: 22, brk: 0.3, d2: 42, vel: 0.6 }, { ratio: 11.87, d1: 30, brk: 0.4, d2: 60 },
-        { ratio: 16.9, d1: 20, brk: 0.3, d2: 48, vel: 0.6 }, { ratio: 23.4, d1: 40, brk: 0.5, d2: 60 }],
-      len: 7, steps: pat('3102312') }),
-    mkInst({ name: 'Open hat', role: 'ohat', note: 418, lvl: 0.38, pan: 0.22, choke: 1, velAmp: 0.8,
-      mx: mxOf({ '0,1': 5, '2,2': 3.4, '2,3': 5 }), out: [0.6, 0, 0.7, 0],
-      ops: [{ ratio: 7.13, d1: 90, brk: 0.45, d2: 420 }, { ratio: 11.87, d1: 120, brk: 0.5, d2: 400 },
-        { ratio: 16.9, d1: 80, brk: 0.45, d2: 460 }, { ratio: 23.4, d1: 140, brk: 0.5, d2: 380 }],
-      len: 7, steps: pat('0030000') }),
-    mkInst({ name: 'Tom', role: 'tom', note: 104, pAmt: 13, pDec: 95, pCurve: 0.4, lvl: 0.75, pan: -0.3, drive: 0.1,
-      mx: mxOf({ '0,1': 1.1 }), out: [1, 0, 0, 0],
-      ops: [{ d1: 170, brk: 0.4, d2: 430 }, { ratio: 1, d1: 38, brk: 0.12, d2: 90 }, { lvl: 0 }, { lvl: 0 }],
-      len: 7, steps: pat('0000030') }),
-    mkInst({ name: 'Clap', role: 'clap', note: 1080, lvl: 0.55, strikes: 4, space: 9, pan: 0.05, cut: true,
-      mx: mxOf({ '0,0': 3.4, '0,1': 4, '2,2': 3 }), out: [0.8, 0, 0.5, 0],
-      ops: [{ d1: 60, brk: 0.25, d2: 170, curve: 0.7 }, { ratio: 2.37, d1: 55, brk: 0.3, d2: 140 },
-        { ratio: 0.73, d1: 50, brk: 0.25, d2: 150, curve: 0.7 }, { lvl: 0 }],
-      len: 7, steps: pat('0000300') }),
-    mkInst({ name: 'Rim', role: 'rim', note: 530, pAmt: 5, pDec: 8, lvl: 0.5, pan: -0.25,
-      mx: mxOf({ '0,1': 3.4 }), out: [1, 0, 0.35, 0],
-      ops: [{ d1: 16, brk: 0.2, d2: 36 }, { ratio: 3.47, d1: 10, brk: 0.1, d2: 18 }, { ratio: 1.62, d1: 12, brk: 0.2, d2: 30 }, { lvl: 0 }],
-      len: 7, steps: pat('0010020') }),
-    mkInst({ name: 'Bell', role: 'bell', note: 331, lvl: 0.32, pan: 0.35, cut: false, rndPitch: 4,
-      mx: mxOf({ '0,1': 2.2, '2,3': 1.8 }), out: [0.7, 0, 0.5, 0],
-      ops: [{ d1: 380, brk: 0.5, d2: 1700 }, { ratio: 3.52, d1: 280, brk: 0.3, d2: 900 },
-        { ratio: 2.76, d1: 240, brk: 0.4, d2: 1200 }, { ratio: 7.13, d1: 90, brk: 0.3, d2: 400 }],
-      len: 7, steps: pat('3000000') }),
+    // Bass drum: damped membrane modes, brief beater contact and modest tension settling.
+    mkInst({ name: "Bass drum", role: "kick", note: 62, pAmt: 6, pDec: 32, pCurve: 0.6, decS: 1, idx: 1, velAmp: 0.78, velIdx: 0.38, drive: 0, rndPitch: 2.5, rndTone: 0.055, lvl: 1.02, strikes: 1, space: 10, pan: 0, fade: 5, choke: 0, cut: true, out: [1,0.31,0.18,0.19],
+      mx: [[0,0,0,0.14],[0,0,0,0.2],[0,0,0,0.28],[0,0,0,5.8]],
+      ops: [
+        {"ratio":1,"lvl":0.96,"a":1.2,"h":0,"d1":98,"brk":0.2,"d2":225,"curve":0.4,"vel":0.22,"pe":1,"phase":0},
+        {"ratio":1.593,"lvl":0.88,"a":0.8,"h":0,"d1":60,"brk":0.14,"d2":113,"curve":0.45,"vel":0.4,"pe":0.85,"phase":0.19},
+        {"ratio":2.136,"lvl":0.76,"a":0.5,"h":0,"d1":38,"brk":0.1,"d2":72,"curve":0.5,"vel":0.5,"pe":0.72,"phase":0.37},
+        {"fixed":true,"hz":1843,"lvl":0.92,"a":0.35,"h":0,"d1":9,"brk":0.14,"d2":13,"curve":0.65,"vel":0.7,"pe":0,"phase":0.13},
+      ], len: 7, steps: pat('4003000') }),
+    // Snare: two shell modes plus a dense feedback-driven wire burst; no sampled audio.
+    mkInst({ name: "Snare", role: "snare", note: 187, pAmt: 4.5, pDec: 18, pCurve: 0.6, decS: 1, idx: 1, velAmp: 0.88, velIdx: 0.05, drive: 0, rndPitch: 3, rndTone: 0.04, lvl: 0.73, strikes: 1, pan: -0.03, fade: 5, choke: 0, cut: true, out: [0.6,0.24,1,0],
+      mx: [[0,0.18,0,0.05],[0,0,0,0.08],[0,0,4.8,5.8],[0,0,0,9.6]],
+      ops: [
+        {"ratio":1,"lvl":0.96,"a":0.8,"h":0,"d1":42,"brk":0.23,"d2":125,"curve":0.4,"vel":0.28,"pe":1,"phase":0},
+        {"ratio":1.684,"lvl":0.84,"a":0.55,"h":0,"d1":31,"brk":0.17,"d2":91,"curve":0.42,"vel":0.38,"pe":0.7,"phase":0.19},
+        {"fixed":true,"hz":3479,"lvl":1,"a":0.45,"h":1,"d1":58,"brk":0.28,"d2":172,"curve":0.3,"vel":0.05,"pe":0,"phase":0.11},
+        {"fixed":true,"hz":6131,"lvl":1,"a":0,"h":0,"d1":260,"brk":0.92,"d2":100,"curve":0.15,"vel":0,"pe":0,"phase":0.28},
+      ], len: 7, steps: pat('0000402') }),
+    // Ride: a distinct stick ping over a longer metallic wash; overlapping hits can ring.
+    mkInst({ name: "Ride", role: "metal", note: 390, pAmt: 0, pDec: 12, decS: 1, idx: 1, velAmp: 0.86, velIdx: 0.1, drive: 0, rndPitch: 3, rndTone: 0.035, lvl: 0.42, pan: 0.3, strikes: 1, space: 10, fade: 8, choke: 0, cut: false, out: [0.68,0,0.53,0],
+      mx: [[0,2.65,0,0.38],[0,3.7,0,0.35],[0,0.25,0,2.4],[0,0,0,4.6]],
+      ops: [
+        {"ratio":7.1,"a":0.65,"h":1,"d1":65,"brk":0.19,"d2":720,"curve":0.36,"vel":0.35,"pe":0,"phase":0.04},
+        {"ratio":10.37,"a":0,"h":0,"d1":2500,"brk":0.92,"d2":900,"curve":0.2,"vel":0,"pe":0,"phase":0.16},
+        {"ratio":15.025641025641026,"a":1.2,"h":3,"d1":360,"brk":0.3,"d2":2450,"curve":0.38,"vel":0.4,"pe":0,"phase":0.31},
+        {"ratio":18.735897435897435,"a":0,"h":0,"d1":2200,"brk":0.95,"d2":600,"curve":0.1,"vel":0,"pe":0,"phase":0.07},
+      ], len: 7, steps: pat('3000000') }),
+    // Open hat: the same metal topology as the closed hat, with a longer decay.
+    mkInst({ name: "Open hat", role: "ohat", note: 418, pAmt: 0, pDec: 10, decS: 1, idx: 1, velAmp: 0.88, velIdx: 0.08, drive: 0, rndPitch: 4, rndTone: 0.035, lvl: 0.36, pan: -0.19, strikes: 1, space: 10, fade: 5, choke: 1, cut: true, out: [0.62,0,0.6,0],
+      mx: [[0,2.35,0,0.4],[0,8.2,0,0.35],[0,0.25,0,2.2],[0,0,0,7.4]],
+      ops: [
+        {"ratio":13.76,"a":0.5,"h":0,"d1":120,"brk":0.39,"d2":570,"curve":0.35,"vel":0.38,"pe":0,"phase":0.12},
+        {"ratio":21.557,"a":0,"h":0,"d1":900,"brk":0.97,"d2":150,"curve":0.1,"vel":0,"pe":0,"phase":0.3},
+        {"ratio":22.632,"a":0.8,"h":0,"d1":90,"brk":0.29,"d2":460,"curve":0.38,"vel":0.45,"pe":0,"phase":0.23},
+        {"ratio":30.366,"a":0,"h":0,"d1":900,"brk":0.97,"d2":150,"curve":0.1,"vel":0,"pe":0,"phase":0.07},
+      ], len: 7, steps: pat('0030000') }),
+    // Closed hat: short contact and wash; choke group 1 closes the open hat.
+    mkInst({ name: "Closed hat", role: "hat", note: 418, pAmt: 0, pDec: 10, decS: 1, idx: 1, velAmp: 0.9, velIdx: 0.08, drive: 0, rndPitch: 4, rndTone: 0.035, lvl: 0.35, pan: -0.19, strikes: 1, space: 10, fade: 4, choke: 1, cut: true, out: [0.62,0,0.6,0],
+      mx: [[0,2.35,0,0.4],[0,8.2,0,0.35],[0,0.25,0,2.2],[0,0,0,7.4]],
+      ops: [
+        {"ratio":13.76,"a":0.35,"h":0,"d1":19,"brk":0.24,"d2":57,"curve":0.38,"vel":0.38,"pe":0,"phase":0.12},
+        {"ratio":21.557,"a":0,"h":0,"d1":140,"brk":0.97,"d2":50,"curve":0.1,"vel":0,"pe":0,"phase":0.3},
+        {"ratio":22.632,"a":0.45,"h":0,"d1":13,"brk":0.19,"d2":41,"curve":0.4,"vel":0.45,"pe":0,"phase":0.23},
+        {"ratio":30.366,"a":0,"h":0,"d1":140,"brk":0.97,"d2":50,"curve":0.1,"vel":0,"pe":0,"phase":0.07},
+      ], len: 7, steps: pat('3102312') }),
+    // High tom: descending drum sizes share a family of inharmonic membrane modes.
+    mkInst({ name: "High tom", role: "tom", note: 185, pAmt: 4.8, pDec: 40, pCurve: 0.55, decS: 1, idx: 1, velAmp: 0.8, velIdx: 0.32, drive: 0, rndPitch: 3, rndTone: 0.06, lvl: 0.73, strikes: 1, space: 10, pan: -0.22, fade: 5, choke: 0, cut: true, out: [1,0.39,0.23,0.16],
+      mx: [[0,0,0,0.12],[0,0,0,0.19],[0,0,0,0.3],[0,0,0,5.4]],
+      ops: [
+        {"ratio":1,"lvl":0.9,"a":0.85,"h":0,"d1":155,"brk":0.25,"d2":340,"curve":0.38,"vel":0.25,"pe":1,"phase":0},
+        {"ratio":1.594,"lvl":0.85,"a":0.55,"h":0,"d1":110,"brk":0.17,"d2":170,"curve":0.42,"vel":0.4,"pe":0.86,"phase":0.19},
+        {"ratio":2.139,"lvl":0.77,"a":0.45,"h":0,"d1":65,"brk":0.12,"d2":106,"curve":0.48,"vel":0.52,"pe":0.72,"phase":0.38},
+        {"fixed":true,"hz":3269,"lvl":0.94,"a":0.25,"h":0,"d1":7,"brk":0.14,"d2":10,"curve":0.58,"vel":0.68,"pe":0,"phase":0.11},
+      ], len: 7, steps: pat('0000030') }),
+    // Mid tom: slightly lower tuning, longer resonance and a central stereo position.
+    mkInst({ name: "Mid tom", role: "tom", note: 139, pAmt: 4.1, pDec: 49, pCurve: 0.55, decS: 1, idx: 1, velAmp: 0.8, velIdx: 0.32, drive: 0, rndPitch: 3, rndTone: 0.06, lvl: 0.76, strikes: 1, space: 10, pan: 0.04, fade: 5, choke: 0, cut: true, out: [1,0.36,0.22,0.15],
+      mx: [[0,0,0,0.13],[0,0,0,0.2],[0,0,0,0.31],[0,0,0,5.4]],
+      ops: [
+        {"ratio":1,"lvl":0.91,"a":0.95,"h":0,"d1":190,"brk":0.25,"d2":410,"curve":0.38,"vel":0.25,"pe":1,"phase":0},
+        {"ratio":1.591,"lvl":0.86,"a":0.6,"h":0,"d1":132,"brk":0.17,"d2":208,"curve":0.42,"vel":0.4,"pe":0.86,"phase":0.2},
+        {"ratio":2.133,"lvl":0.78,"a":0.5,"h":0,"d1":78,"brk":0.12,"d2":130,"curve":0.48,"vel":0.52,"pe":0.72,"phase":0.39},
+        {"fixed":true,"hz":2957,"lvl":0.94,"a":0.3,"h":0,"d1":8,"brk":0.14,"d2":11,"curve":0.58,"vel":0.68,"pe":0,"phase":0.12},
+      ], len: 7, steps: pat('0000300') }),
+    // Low tom: the lowest and longest body, balanced below the bass drum attack.
+    mkInst({ name: "Low tom", role: "tom", note: 104, pAmt: 3.5, pDec: 58, pCurve: 0.55, decS: 1, idx: 1, velAmp: 0.8, velIdx: 0.32, drive: 0, rndPitch: 3, rndTone: 0.06, lvl: 0.74, strikes: 1, space: 10, pan: 0.28, fade: 6, choke: 0, cut: true, out: [1,0.34,0.2,0.14],
+      mx: [[0,0,0,0.14],[0,0,0,0.21],[0,0,0,0.32],[0,0,0,5.4]],
+      ops: [
+        {"ratio":1,"lvl":0.92,"a":1.05,"h":0,"d1":235,"brk":0.26,"d2":495,"curve":0.38,"vel":0.25,"pe":1,"phase":0},
+        {"ratio":1.588,"lvl":0.87,"a":0.7,"h":0,"d1":159,"brk":0.18,"d2":255,"curve":0.42,"vel":0.4,"pe":0.86,"phase":0.2},
+        {"ratio":2.128,"lvl":0.79,"a":0.55,"h":0,"d1":96,"brk":0.13,"d2":155,"curve":0.48,"vel":0.52,"pe":0.72,"phase":0.4},
+        {"fixed":true,"hz":2671,"lvl":0.94,"a":0.35,"h":0,"d1":9,"brk":0.14,"d2":12,"curve":0.58,"vel":0.68,"pe":0,"phase":0.12},
+      ], len: 7, steps: pat('0010020') }),
   ];
 }
 const DEFAULTS = { autoReturn: true, escDefaultV1: true, lengthDivisor: 1, randSeq: 0, def7: true, bpmSnap: false, bpm: 90, swing: 0, spb: 4, master: 0.5, transportPingPong: false, patternShift: false, patternShiftDirection: 'up', patternShiftMeasures: 1, randomSoundsMeasures: 1, randomBeatsMeasures: 1, randomBothMeasures: 1, randomPingDivisorHold: false, evolutionPingPong: false, evolutionMeasures: 1, decayMultiplier: 1, decayAutoReturn: false, decaySeq: 0, voiceMode: 'track', os: 2, tracks: null };
@@ -2270,9 +2310,8 @@ function paintRev(ti) {
 function buildSteps(ti) {
   const tr = state.tracks[ti], r = rowEls[ti];
   r.steps.innerHTML = ''; r.cells = []; r.now = -1;
-  const grp = state.spb;
   for (let i = 0; i < tr.len / (state.lengthDivisor || 1); i++) {
-    const c = el('div', 'cell' + (i && i % grp === 0 ? ' g' : ''));
+    const c = el('div', 'cell');
     const remaining = tr.len / (state.lengthDivisor || 1) - i;
     if (remaining < 1) { c.style.flexBasis = 'calc(var(--cw) * ' + remaining + ')'; c.style.borderRightStyle = 'dashed'; }
     c.dataset.i = i; c.setAttribute('aria-label', 'Step ' + (i + 1));
@@ -2709,7 +2748,7 @@ function changeRandomSounds(change) {
   evolutionMotion.clear(); paintEvolution();
 }
 function reverseTimbre(dt) {
-  trailTime = Math.max(0, trailTime - dt);   // the route is walked back at the pace it was travelled; the 10\u00d7 button scales both directions alike
+  trailTime = Math.max(0, trailTime - dt);   // Retrace the same motion clock; Speed and 10\u00d7 scale both directions alike.
   while (evolutionTrail.length > 2 && evolutionTrail[evolutionTrail.length - 2].t >= trailTime) evolutionTrail.pop();
   const a = evolutionTrail[Math.max(0, evolutionTrail.length - 2)], b = evolutionTrail.at(-1);
   const f = b.t > a.t ? clamp((trailTime - a.t) / (b.t - a.t), 0, 1) : 0;
@@ -2788,19 +2827,20 @@ function stopEvolution(kept = false) {
   sync();
 }
 function evolveTick(now) {
-  // Scale the whole timbre motion clock so 10\u00d7 speeds up the same process in either direction.
+  // A linear Speed dial scales the whole timbre motion clock in either direction.
+  // Keep perceptual parameter ranges and the existing audio smoothing unchanged.
   // Old messages must not rewind the clock after Play or a manual mode change.
   if (evolutionTime !== null && now <= evolutionTime) return;
   // Resume with one ordinary step after a UI stall, never a catch-up jump.
   const interval = 1024 / (ctx ? ctx.sampleRate : 48000);
-  const dt = (evolutionTime === null ? 0 : Math.min(interval, (now - evolutionTime) / 1000)) * evolutionMultiplier;
+  const dt = (evolutionTime === null ? 0 : Math.min(interval, (now - evolutionTime) / 1000)) * (evolutionSpeed / 100) * evolutionMultiplier;
   evolutionTime = now;
   if (!(evolving || devolving) || !playing || !ctx || ctx.state !== 'running' || evolutionTouch || (document.activeElement?.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) return;
+  if (dt <= 0) return;   // 0% holds both the current sound and its saved motion path.
   if (devolving) reverseTimbre(dt);
   else {
-  const w = evolutionSpeed / 100;
-  // Normalized parameter movement per second: zero is intentionally not off.
-  const speed = 0.0007 + 0.075 * w * w;
+  // Preserve the former 100% rate; the dial now changes only the motion clock.
+  const speed = 0.0757;
   const move = (obj, spec, id, weight = 1) => {
     let m = evolutionMotion.get(id);
     if (!m) { m = { v: 0, target: Math.random() * 2 - 1, remaining: 0 }; evolutionMotion.set(id, m); }
@@ -2849,7 +2889,7 @@ $('#devolve').onclick = () => {
   if (evolutionTrail.length < 2) return;
   pushUndo(); startDevolution();
 };
-$('#devolve').title = 'Retrace the evolution path backwards to the starting kit, at the same pace it was travelled.';
+$('#devolve').title = 'Retrace the evolution path backwards to the starting kit, at the current Speed dial rate.';
 $('#evolutionPing').innerHTML = PP_ICON;
 $('#evolutionPing').onclick = () => {
   state.evolutionPingPong = !state.evolutionPingPong;
@@ -3378,24 +3418,35 @@ $('#saveKit').onclick = async () => {
   await offerFile('percussion-synth-kit.json', new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' }));
 };
 $('#loadKit').onclick = () => $('#kitFile').click();
+// Both file loads and the factory kit use one audio-thread replacement barrier.
+function installKit(s) {
+  cancelStepRotations(); stopRandomPing(); randomPingMinimumId = ++randomPingCounter;
+  pushUndo(); resetTrail();
+  pendingMix = {}; pendingUndo = null; pendingDivision = null; pendingLengthDivision = null; revArm.fill(false);
+  state = s;
+  delayReturning = delayHolding = false; delayTarget = 1; $('#kShortenDelay')._cancelGesture?.();
+  // a new kit starts a new history: every tally and queue restarts, in the page and in the engine
+  state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = 0;
+  engineMixSeq = engineLengthSeq = 0; engineRand = 0; state.flipSeq = engineFlips;
+  // Ignore old automation acknowledgements until this kit reaches the audio thread.
+  // loadId acknowledges replacement without stopping a running transport.
+  sessionLoading = node ? ++sessionLoadCounter : 0;
+  if (node) node.port.postMessage({ type: 'loadKit', state, loadId: sessionLoading });
+  clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); paintEvolution(); paintRandomPing(); $('#xstat').textContent = '';
+}
+$('#defaultKit').onclick = () => {
+  const tracks = defaultKit().map((fresh, i) => {
+    const old = state.tracks[i];
+    // Rhythms and transport choices remain part of the current performance.
+    for (const key of ['len', 'mute', 'solo', 'rev', 'pp']) fresh[key] = old[key];
+    fresh.steps = old.steps.slice();
+    return fresh;
+  });
+  installKit(normalize(Object.assign({}, state, {tracks})));
+};
 $('#kitFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  try {
-    const s = normalize(JSON.parse(await f.text()));
-    cancelStepRotations(); stopRandomPing(); randomPingMinimumId = ++randomPingCounter;
-    pushUndo(); resetTrail();
-    pendingMix = {}; pendingUndo = null; pendingDivision = null; pendingLengthDivision = null; revArm.fill(false);
-    state = s;
-    delayReturning = delayHolding = false; delayTarget = 1; $('#kShortenDelay')._cancelGesture?.();
-    // a new kit starts a new history: every tally and queue restarts, in the page and in the engine
-    state.mixSeq = state.lengthSeq = state.divisionSeq = state.undoSeq = state.randSeq = 0;
-    engineMixSeq = engineLengthSeq = 0; engineRand = 0; state.flipSeq = engineFlips;
-    // Ignore old automation acknowledgements until this kit reaches the audio thread.
-    // loadId acknowledges replacement without stopping a running transport.
-    sessionLoading = node ? ++sessionLoadCounter : 0;
-    if (node) node.port.postMessage({ type: 'loadKit', state, loadId: sessionLoading });
-    clearPend(); paintUndo(); paintDivision(); renderHeader(); renderVMode(); renderAll(); paintEvolution(); paintRandomPing(); $('#xstat').textContent = '';
-  }
+  try { installKit(normalize(JSON.parse(await f.text()))); }
   catch (err) { $('#xstat').textContent = 'not a kit file'; }
   e.target.value = '';
 };
