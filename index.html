@@ -1297,11 +1297,9 @@ class FM8 extends AudioWorkletProcessor {
         st.tracks[c.t][c.key]=c.value;
         if(c.key==='pp'){
           ppChanged |= 1<<c.t;
-          if(!c.value){st.tracks[c.t].rev=false;this.revArm[c.t]=0;}
         }
       }
       this.lastMix=st.tracks.map(t=>({mute:!!t.mute,solo:!!t.solo,pp:!!t.pp}));
-      for(const c of changes)if(c.key==='pp'&&!c.value)this.lastMix[c.t].rev=false;
       this.mixSeq++;
       this.port.postMessage({type:'mixApplied',seq:this.mixSeq,changes});
     }
@@ -1316,9 +1314,8 @@ class FM8 extends AudioWorkletProcessor {
       const divisor = st.lengthDivisor || 1;
       const endpoint = Math.max(0,len-divisor);
       const P = 2 * endpoint;
-      // Queued ping-pong changes start a full traversal on the shared downbeat.
+      // Ping-pong changes restart traversal without changing Reverse or its pending request.
       if (!!tr.pp !== !!this.tpp[t] || (ppChanged & (1<<t))) {
-        if (!tr.pp) { this.tdir[t] = 1; this.revArm[t] = 0; tr.rev = false; }
         this.tpp[t] = tr.pp ? 1 : 0;
         this.tk0[t] = this.playTick;
         this.ti0[t] = this.tdir[t] * Math.sign(st.bpm) < 0 ? this.trackEndpoint(tr) : 0;
@@ -1329,7 +1326,6 @@ class FM8 extends AudioWorkletProcessor {
         this.tdir[t] = -this.tdir[t]; this.tk0[t] = this.playTick;
         this.ti0[t] = this.tdir[t] * Math.sign(st.bpm) < 0 ? this.trackEndpoint(tr) : 0;
         this.revArm[t] = 0; this.thas[t] = 0; tr.rev = this.tdir[t] < 0;
-        if(this.lastMix && Object.prototype.hasOwnProperty.call(this.lastMix[t],'rev'))this.lastMix[t].rev=tr.rev;
         this.port.postMessage({ type: 'rev', t, rev: tr.rev });
       }
       let idx = this.ti0[t] + this.tdir[t] * (this.playTick - this.tk0[t]);
@@ -1739,7 +1735,7 @@ function prepareAudio() {
       else if (d.type === 'evolutionTurn') landEvolutionTurn(d);
       else if (d.type === 'delayStatus') handleDelayStatus(d);
       else if (d.type === 'engineError') $('#xstat').textContent = 'audio engine recovered from a bad value';
-      else if (d.type === 'mixApplied') { state.mixSeq=engineMixSeq=d.seq;for(const c of d.changes){state.tracks[c.t][c.key]=c.value;if(c.key==='pp'&&!c.value){state.tracks[c.t].rev=false;revArm[c.t]=false;paintRev(c.t);}const key=c.t+':'+c.key;if(pendingMix[key]?.id===c.id)delete pendingMix[key];}paintMix();saveLocal(); }
+      else if (d.type === 'mixApplied') { state.mixSeq=engineMixSeq=d.seq;for(const c of d.changes){state.tracks[c.t][c.key]=c.value;const key=c.t+':'+c.key;if(pendingMix[key]?.id===c.id)delete pendingMix[key];}paintMix();saveLocal(); }
       else if (d.type === 'undoApplied') { landUndo(d); }
       else if (d.type === 'lengthApplied') { state.lengthDivisor=d.value; state.lengthSeq=engineLengthSeq=d.seq; pendingLengthDivision=null; renderSeq(); saveLocal(); }
       else if (d.type === 'divisionApplied') { state.spb = d.value; state.divisionSeq = d.seq; pendingDivision = null; paintDivision(); renderSeq(); saveLocal(); }
@@ -2191,7 +2187,7 @@ function queueMix(t,key){
     if(value===!!state.tracks[t][key])delete pendingMix[id];else pendingMix[id]={value,id:command};
     node.port.postMessage({type:'mixPending',t,key,value:pendingMix[id]?value:null,id:command});
     paintMix();
-  }else{state.tracks[t][key]=value;if(key==='pp'&&!value){state.tracks[t].rev=false;revArm[t]=false;if(node)node.port.postMessage({type:'revArm',t,on:false});paintRev(t);}paintMix();sync();}
+  }else{state.tracks[t][key]=value;paintMix();sync();}
 }
 let rowEls = [];
 function renderSeq() {
