@@ -41,7 +41,6 @@ header.bar{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg)
 .brand b{font:inherit;font-size:16px;font-weight:700;letter-spacing:.07em;line-height:1.3;text-transform:uppercase}
 .brand span{letter-spacing:.1em;text-transform:uppercase;font-size:10px}
 #scope{width:180px;height:34px;border:1px solid var(--fg);display:block}
-.spacer{flex:1}
 .status{min-width:12ch}
 
 /* line slider */
@@ -150,7 +149,6 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 
 <section class="bar" id="audio-monitor" aria-label="Audio quality and output">
   <div class="grp"><span class="cap">Oversample</span><div class="seg" id="os"></div></div>
-  <div class="spacer"></div>
   <div class="grp"><canvas id="scope" aria-label="Output oscilloscope"></canvas><span id="fmtinfo" class="status"></span></div>
 </section>
 
@@ -161,7 +159,6 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="rndBothPing" class="random-pp" type="button" aria-label="Sounds and beats undo ping-pong" aria-pressed="false"></button><button type="button" data-random-mode="both" data-random-measures="1" aria-label="Both: alternate every 1 measure">1</button><button type="button" data-random-mode="both" data-random-measures="2" aria-label="Both: alternate every 2 measures">2</button><button type="button" data-random-mode="both" data-random-measures="3" aria-label="Both: alternate every 3 measures">3</button><button type="button" data-random-mode="both" data-random-measures="4" aria-label="Both: alternate every 4 measures">4</button></div></div>
   <div class="grp"><button id="undo">Undo</button></div>
   <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
-  <div class="spacer"></div>
   <div class="grp"><div class="seg"><button id="evolve" aria-pressed="false">Evolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div><div id="kEvolve" class="knob" title="Linear evolution and devolution speed: 50% runs at half the rate of 100%; 0% pauses sound changes."></div><div class="seg" id="evolutionLoop" role="group" aria-label="Automatic devolution"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolutionPing" class="random-pp" type="button" aria-label="Evolution and devolution ping-pong" aria-pressed="false"></button><button type="button" data-evolution-measures="1" aria-label="1 measure before devolution">1</button><button type="button" data-evolution-measures="2" aria-label="2 measures before devolution">2</button><button type="button" data-evolution-measures="3" aria-label="3 measures before devolution">3</button><button type="button" data-evolution-measures="4" aria-label="4 measures before devolution">4</button></div></div>
 </section>
 
@@ -183,7 +180,6 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   <div class="grp"><div class="seg" id="xrate"></div><div class="seg" id="xbits"></div></div>
 
   <div class="grp"><button id="export">Export</button><span id="xstat" class="status"></span></div>
-  <div class="spacer"></div>
   <div class="grp"><span class="cap">Kit</span><div class="seg"><button id="saveKit">Save</button><button id="loadKit">Load</button><button id="defaultKit" title="Load the acoustic default sounds and mix, keeping your patterns and tempo. Undo restores the previous sounds.">Default</button></div><input type="file" id="kitFile" accept=".json,application/json" hidden></div>
   <div class="grp"><div class="seg"><button id="saveAll" title="Save every sound, pattern, global control, automation setting, and WAV option.">Save All Parameters</button><button id="loadAll" title="Restore a full save, paused and ready to Play.">Load All</button></div><input type="file" id="sessionFile" accept=".json,application/json" hidden></div>
 </section>
