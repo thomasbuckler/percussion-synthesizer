@@ -2259,11 +2259,11 @@ function renderHeader() {
   };
   paintFlip();
   // Keep these knob hosts across header redraws so their gesture listeners are installed once.
-  if (!$('#swing')._upd) knob($('#swing'), 'Swing', () => state.swing * 100,
+  if (!$('#swing')._upd) knob($('#swing'), 'SWING', () => state.swing * 100,
     v => { state.swing = v / 100; sync(); }, v => Math.round(v) + '%', {reset: 0});
-  if (!$('#humanize')._upd) knob($('#humanize'), 'Humanize', () => state.humanize,
+  if (!$('#humanize')._upd) knob($('#humanize'), 'HUMAN', () => state.humanize,
     v => { state.humanize = v; sync(); }, v => Math.round(v) + '%', {reset: 0});
-  if (!$('#master')._upd) knob($('#master'), 'Master', () => toNorm(MASTER_SPEC, state.master) * 100,
+  if (!$('#master')._upd) knob($('#master'), 'MASTR', () => toNorm(MASTER_SPEC, state.master) * 100,
     v => { state.master = toVal(MASTER_SPEC, v / 100); sync(); },
     v => F.db(toVal(MASTER_SPEC, v / 100)), {step: 0.1, reset: toNorm(MASTER_SPEC, MASTER_SPEC.d) * 100});
   for (const id of ['#swing', '#humanize', '#master']) { $(id)._cancelGesture(); $(id)._upd(); }
