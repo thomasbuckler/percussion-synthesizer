@@ -369,6 +369,8 @@ class FM8 extends AudioWorkletProcessor {
     this.patternOrigin = 0;
     // The clock stays in full-length steps; divisors only change traversal density.
     this.gridTick = 0; this.gridBeat = 0;
+    this.divisorReference=null; this.divisorPhase=null;
+    this.meterLength = 1; this.lengthChangedTick = -Infinity;
     this.returnTicks = null;
     this.lengthPending = null; this.lengthSeq = 0; this.lastLengthDivisor = 1;
     this.divisionPending = null; this.divisionSeq = 0; this.lastDivision = null;
@@ -415,6 +417,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.clock - this.errAt > sampleRate) { this.errAt = this.clock; this.port.postMessage({ type: 'engineError', message: msg || '' }); }
   }
   resetSync() {
+    this.divisorReference=null; this.divisorPhase=null;
     this.clearHumanTiming(true);
     this.cancelTimbre();
     this.outputLevelFrames = this.outputLevelCount = 0;
@@ -678,9 +681,11 @@ class FM8 extends AudioWorkletProcessor {
       if (after > before && before > 0) for (const hit of this.humanQueue)
         hit.due = this.clock + Math.max(0,Math.round((hit.due-this.clock)*before/after));
     }
+    this.validateDivisorReference(s,true);
     if (this.st && s.lengthDivisor !== this.st.lengthDivisor)
       this.anchorGrid(this.unswungTick(this.pos,this.st.lengthDivisor||1,this.st.swing*0.5));
     this.st = s;
+    this.meterLength = this.patternCycle();
     if (shiftChanged) this.resetPatternShift();
     // Manual controls use the same continuous path as Evolution. Rebind replacement
     // objects without snapping either the effective matrix or Drive's bypass state.
@@ -705,6 +710,7 @@ class FM8 extends AudioWorkletProcessor {
     // Beat-only ping-pong leaves the current timbre ramp running.
     if (soundChanged && s===this.st) { this.cancelTimbre(); this.bindTimbre(); }
     if (outputLevelsChanged && s===this.st) this.setOutputLevels(s, false);
+    if (s===this.st) this.meterLength = this.patternCycle();
   }
   rememberRandom(tracks) {
     this.lastPend = tracks; this.randSeq++; this.lastRandUndoSeq = this.undoSeq;
@@ -749,11 +755,13 @@ class FM8 extends AudioWorkletProcessor {
     }
   }
   start() {
+    this.divisorReference=null; this.divisorPhase=null;
     this.clearHumanTiming(true);
     this.humanSeed = (this.humanSeed + 0x9e3779b9) >>> 0;
     // The measure clock advances in sub-ticks; signed playback is independent.
     this.patternOrigin = 0;
     this.gridTick = 0; this.gridBeat = 0;
+    this.lengthChangedTick = -Infinity;
     this.returnTicks = null;
     this.playing = true; this.pos = 0; this.nk = 0; this.pk = 0; this.fired = 0; this.flipArm = false;
     this.transportBoundary = 0;
@@ -797,7 +805,7 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { this.clearHumanTiming(true); if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.resetPatternShift(0); this.cancelStepRotate(); this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'stop') { this.divisorReference=null; this.divisorPhase=null; this.clearHumanTiming(true); if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.resetPatternShift(0); this.cancelStepRotate(); this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
     else if (d.type === 'stepRotate') this.queueStepRotate(d);
     else if (d.type === 'stepRotateCancel') {
       this.cancelStepRotate();
@@ -840,7 +848,7 @@ class FM8 extends AudioWorkletProcessor {
     }
     else if (d.type === 'randomPingNext') { if (this.randomPing && this.randomPing.id === d.id) this.randomPing.tracks = d.tracks || null; }
     else if (d.type === 'randomPingDivisorHold' && this.st) this.st.randomPingDivisorHold = !!d.on;
-    else if (d.type === 'transportPingPong' && this.st) this.st.transportPingPong = !!d.on;
+    else if (d.type === 'transportPingPong' && this.st) { if(this.st.transportPingPong!==!!d.on)this.invalidateDivisorReference('transport Ping-pong'); this.st.transportPingPong = !!d.on; }
     else if (d.type === 'flipArm') { this.flipArm = !!d.on; this.flipArmId = Number.isSafeInteger(d.id) ? d.id : 0; }
     else if (d.type === 'revArm') this.revArm[d.t] = d.on ? 1 : 0;
     else if (d.type === 'mixPending') { const key=d.t+':'+d.key; if(d.value===null)delete this.mixPending[key];else this.mixPending[key]={t:d.t,key:d.key,value:!!d.value,id:d.id}; }
@@ -1039,9 +1047,11 @@ class FM8 extends AudioWorkletProcessor {
   prepareHumanTick(k) {
     if (this.humanTick === k) return;
     this.humanTick = k; this.humanMask = 0; this.humanPreviewReady = false; this.humanWindowTick = -1;
+    const beatSeed=Math.round(this.beatAt(k)*65536);
     for (let t=0;t<8;t++) {
-      // Stable per run/tick/track; do not consume the sound engine's random sequence.
-      let x = this.humanSeed ^ Math.imul(k|0,0x9e3779b1) ^ Math.imul(t+1,0x85ebca6b);
+      // Key timing variation to musical position, so a temporary divisor does not
+      // replace the full pattern's humanization after returning to the same beat.
+      let x = this.humanSeed ^ Math.imul(beatSeed|0,0x9e3779b1) ^ Math.imul(t+1,0x85ebca6b);
       x = Math.imul(x ^ (x>>>16),0x7feb352d);
       x = Math.imul(x ^ (x>>>15),0x846ca68b); x ^= x>>>16;
       this.humanOffsets[t] = (x>>>0)/2147483648 - 1;
@@ -1092,7 +1102,9 @@ class FM8 extends AudioWorkletProcessor {
   }
   humanizeHits(k, hits) {
     this.prepareHumanTick(k);
-    const window = this.humanWindow(k);
+    // A committed length transition lands as one group on its barline. Human
+    // timing continues inside the pattern, without smearing entry or escape.
+    const window = k === this.lengthChangedTick ? 0 : this.humanWindow(k);
     for (let h=0;h<hits.length;h+=2) {
       const t=hits[h], bit=1<<t;
       if (this.humanMask & bit) continue;
@@ -1180,18 +1192,138 @@ class FM8 extends AudioWorkletProcessor {
     }
     return {indices,levels};
   }
+  // A transport-only continuation: eight row anchors and the ordinary playback
+  // cursor. It contains no voices, sounds, messages, random choices or DSP state.
+  snapshotTransport() {
+    const ref = {
+      st: {bpm:this.st.bpm, lengthDivisor:this.st.lengthDivisor||1,
+        transportPingPong:!!this.st.transportPingPong,
+        tracks:this.st.tracks.map(tr=>({len:tr.len,rev:!!tr.rev,pp:!!tr.pp}))},
+      meterLength:this.patternCycle(),
+      port:{postMessage(){}},
+      patternCycle:this.patternCycle, boundary:this.boundary,
+      trackEndpoint:this.trackEndpoint, advancePlayback:this.advancePlayback,
+    };
+    for (const key of ['playTick','playTickStarted','playbackReset','bounceMode',
+        'bounceCycle','bounceDivisor','bounceHigh','patternOrigin',
+        'transportBoundary','flipArm','flipArmId','flips']) ref[key]=this[key];
+    for (const key of ['tdir','tk0','ti0','tpp','tlastK','thas']) ref[key]=this[key].slice();
+    return ref;
+  }
+  invalidateDivisorReference(reason) {
+    this.divisorReference=null;
+    // A staged restoration must not overwrite a control committed later in the
+    // same fireStep. A mapped entry can safely finish; row controls run after it.
+    if (this.divisorPhase?.restore) this.divisorPhase=null;
+    this.divisorReferenceReason=reason;
+  }
+  validateDivisorReference(state=this.st, manualDirection=false) {
+    const ref=this.divisorReference;
+    if (!ref) return false;
+    if (!!state.transportPingPong!==ref.st.transportPingPong ||
+        state.tracks.some((tr,t)=>tr.len!==ref.st.tracks[t].len ||
+          !!tr.rev!==ref.st.tracks[t].rev || !!tr.pp!==ref.st.tracks[t].pp) ||
+        (manualDirection && Math.sign(state.bpm)!==Math.sign(this.st.bpm))) {
+      this.invalidateDivisorReference('transport controls changed');
+      return false;
+    }
+    return true;
+  }
+  advanceDivisorReference() {
+    const ref=this.divisorReference;
+    if (!ref) return;
+    // Usual work is one comparison per audio sample. The bound also covers a
+    // large live Swing edit without an unbounded loop on the audio thread.
+    let budget=32;
+    while (this.swungBeat(ref.nextBeat)<=this.pos && budget-- > 0) {
+      ref.advancePlayback(ref.nextTick++);
+      ref.lastBeat=ref.nextBeat; ref.nextBeat+=1;
+    }
+    if (budget<0) this.invalidateDivisorReference('reference catch-up limit');
+  }
+  queueDivisorPhase(k, value) {
+    const old=this.st.lengthDivisor||1, beat=this.beatAt(k);
+    if (value===old) return;
+    // Predict this event in the outgoing layout, before changing the divisor.
+    // This includes a manual Flip queued for the same boundary.
+    const source=this.snapshotTransport();
+    source.advancePlayback(k);
+    if (old===1 && value>1) {
+      source.lastBeat=beat; source.nextBeat=beat+1; source.nextTick=k+1;
+      source.flipArm=false;
+      this.divisorReference=source; this.divisorReferenceReason=null;
+    }
+    const valid=this.validateDivisorReference();
+    const ref=valid ? this.divisorReference : null;
+    // An automatic escape lands on an original full-step event. If a manual
+    // escape occurs at a fractional full step, map its phase instead of copying
+    // an old event or pretending the reference already reached the next one.
+    const restore=value===1 && ref && Math.abs(ref.lastBeat-beat)<1e-7;
+    this.divisorPhase={k,value,source:restore ? ref : source,restore:!!restore};
+  }
+  applyDivisorPhase(k) {
+    const pending=this.divisorPhase;
+    if (!pending || pending.k!==k) return;
+    this.divisorPhase=null;
+    const source=pending.source, divisor=this.st.lengthDivisor||1;
+    const dir=source.st.bpm<0 ? -1 : 1;
+    if (Math.sign(this.st.bpm)!==dir && this.st.bpm) {
+      this.st.bpm=Math.abs(this.st.bpm)*dir; this.flips++;
+      this.port.postMessage({type:'flipped',flips:this.flips,bpm:this.st.bpm,
+        armed:this.flipArm,armId:this.flipArmId});
+    }
+    if (pending.restore) {
+      // Copy only phase. User sound, pattern, mix and automation state stay live.
+      for (const key of ['playTick','playTickStarted','playbackReset','bounceMode',
+          'bounceCycle','bounceDivisor','bounceHigh']) this[key]=source[key];
+      for (const key of ['tdir','tk0','ti0','tpp']) this[key].set(source[key]);
+    } else {
+      const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
+      const raw=((source.playTick%cycle)+cycle)%cycle;
+      this.playTick=on ? Math.min(this.bounceHigh,Math.round(raw/divisor)*divisor) : 0;
+      for (let t=0;t<8;t++) {
+        const tr=this.st.tracks[t], oldDivisor=source.st.lengthDivisor||1;
+        const oldEndpoint=Math.max(0,tr.len-oldDivisor);
+        const oldPeriod=2*oldEndpoint;
+        let index=source.ti0[t]+source.tdir[t]*(source.playTick-source.tk0[t]);
+        let descending=false;
+        if (tr.pp && oldPeriod>0) {
+          const q=((index%oldPeriod)+oldPeriod)%oldPeriod;
+          descending=q>oldEndpoint; index=descending ? oldPeriod-q : q;
+        } else if (tr.pp) index=((index%oldDivisor)+oldDivisor)%oldDivisor;
+        else index=((index%tr.len)+tr.len)%tr.len;
+        const endpoint=Math.max(0,tr.len-divisor);
+        const maximum=tr.pp ? Math.floor(endpoint/divisor)*divisor :
+          Math.max(0,(Math.ceil(tr.len/divisor)-1)*divisor);
+        const mapped=Math.max(0,Math.min(maximum,Math.round(index/divisor)*divisor));
+        this.tk0[t]=this.playTick;
+        this.ti0[t]=tr.pp && descending && endpoint>0 ? 2*endpoint-mapped : mapped;
+      }
+      this.playTickStarted=true; this.playbackReset=false;
+    }
+    this.thas.fill(0);
+    if (divisor===1) this.divisorReference=null;
+  }
   beatAt(k) { return this.gridBeat + (k-this.gridTick)/(this.st.lengthDivisor||1); }
   anchorGrid(k) { this.gridBeat = this.beatAt(k); this.gridTick = k; }
-  ev(k) {
-    const beat = this.beatAt(k), q = Math.floor(beat), f = beat - q;
-    const sw = this.st.swing * 0.5, q1 = q + 1;
-    const a = q + ((((q % 2) + 2) % 2) ? sw : 0), b = q1 + ((((q1 % 2) + 2) % 2) ? sw : 0);
-    return a * (1-f) + b * f;
+  swungBeat(beat) {
+    // Swing moves paired offbeats inside each full measure, never the barline.
+    // An odd last step stays a full step instead of pushing the next measure late.
+    const length=this.meterLength, bar=Math.floor(beat/length)*length;
+    const local=beat-bar, q=Math.floor(local), f=local-q, sw=this.st.swing*0.5;
+    const a=q+((q%2) ? sw : 0), next=q+1;
+    const b=next+((next<length && next%2) ? sw : 0);
+    return bar+a*(1-f)+b*f;
+  }
+  ev(k) { return this.swungBeat(this.beatAt(k)); }
+  unswungBeat(pos, swing=this.st.swing*0.5) {
+    const length=this.meterLength, bar=Math.floor(pos/length)*length, local=pos-bar;
+    const pair=Math.floor(local/2)*2, phase=local-pair;
+    if (pair+1>=length) return pos;
+    return bar+pair+(phase<=1+swing ? phase/(1+swing) : 1+(phase-1-swing)/(1-swing));
   }
   unswungTick(pos, divisor, swing) {
-    const pair = Math.floor(pos / 2), phase = pos - 2 * pair;
-    const beat = 2 * pair + (phase <= 1 + swing ? phase / (1 + swing) : 1 + (phase - 1 - swing) / (1 - swing));
-    return this.gridTick + divisor * (beat-this.gridBeat);
+    return this.gridTick + divisor * (this.unswungBeat(pos,swing)-this.gridBeat);
   }
   advance() {
     const st = this.st;
@@ -1203,6 +1335,7 @@ class FM8 extends AudioWorkletProcessor {
     // Capture elapsed traversal before a boundary can replace the divisor/anchors.
     const elapsed = cycle ? Math.max(0,this.unswungTick(nw,divisor,swing)-this.unswungTick(oldPos,divisor,swing))/cycleLength : 0;
     this.pos = nw;
+    this.advanceDivisorReference();
     if (this.delayReturn) this.advanceDelayReturn();
     let budget = 32; // Hard bound: a malformed state must never monopolize the audio thread.
     if (rate > 0) while (budget-- > 0 && this.playing && this.ev(this.nk) <= nw) {
@@ -1229,6 +1362,14 @@ class FM8 extends AudioWorkletProcessor {
     return visiblePingPong && tr.pp ? Math.floor(Math.max(0,tr.len-d)/d)*d : Math.max(0,(Math.ceil(tr.len/d)-1)*d);
   }
   advancePlayback(k) {
+    // Restore before normal stepping, so a temporary endpoint cannot emit a
+    // phantom Flip immediately before the reference resumes.
+    if (this.divisorPhase?.k===k && this.divisorPhase.restore) {
+      const before=this.st.bpm;
+      this.applyDivisorPhase(k);
+      if(this.boundary(k))this.transportBoundary=k;
+      return this.st.bpm!==before;
+    }
     const st=this.st, on=!!st.transportPingPong, cycle=this.patternCycle(), divisor=st.lengthDivisor||1;
     const originalDir=st.bpm<0 ? -1 : 1;
     let dir=originalDir;
@@ -1335,18 +1476,26 @@ class FM8 extends AudioWorkletProcessor {
     const cycle=this.patternCycle();
     const boundary=(((k-this.patternOrigin)%cycle)+cycle)%cycle===0;
     const apply=value=>{
+      this.queueDivisorPhase(k,value);
       // Keep this event at the same swung beat when entering or escaping a divisor.
       this.anchorGrid(k);
       st.lengthDivisor=this.lastLengthDivisor=value;
       this.lengthSeq++;
       this.alignDividedTracks(k);
+      this.lengthChangedTick=k;
       this.returnTicks=st.autoReturn&&value>1 ? this.patternCycle()*value : null;
       this.port.postMessage({type:'lengthApplied',value,seq:this.lengthSeq});
     };
     // Count complete sub-tick intervals, starting at the division's landing boundary.
-    if(this.returnTicks!==null && --this.returnTicks<=0) apply(1);
-    if(this.lengthPending!==null&&boundary){
+    const escape=this.returnTicks!==null && --this.returnTicks<=0;
+    // An early humanized note is already audible: leave this entire boundary
+    // with the old pattern and commit the request at the following boundary.
+    if(this.lengthPending!==null&&boundary && !(this.humanTick===k && this.humanMask)){
       const value=this.lengthPending;this.lengthPending=null;apply(value);
+    } else if(escape){
+      // A queued replacement and ESC at the same boundary are one transition.
+      // Do not briefly restore full length and lose the continuation in between.
+      apply(1);
     } else if(st.autoReturn&&(st.lengthDivisor||1)>1&&this.returnTicks===null&&boundary){
       this.returnTicks=cycle*st.lengthDivisor;
     }
@@ -1456,15 +1605,20 @@ class FM8 extends AudioWorkletProcessor {
         this.randomChanges = Array.from({length:8}, () => ({}));
         this.anchorGrid(k);
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
+        this.meterLength=this.patternCycle();
         this.cancelTimbre();this.bindTimbre();this.setOutputLevels(st, false);
         this.pend=null;this.lengthPending=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
         for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
-        if(timingChanged){this.returnTicks=null;this.alignDividedTracks(k);}
+        if(timingChanged){this.invalidateDivisorReference('Undo timing layout');this.returnTicks=null;this.alignDividedTracks(k);}
         this.setGains(st);
         this.port.postMessage({type:'undoApplied',seq:this.undoSeq,lengthSeq:this.lengthSeq,value:u});
       }
     }
+    // Cancelled direction requests must not discard the saved continuation.
+    // Only a direction edit that actually lands supersedes that continuation.
+    if(this.boundary(k) && (this.flipArm || this.revArm.some(Boolean)))
+      this.invalidateDivisorReference('committed direction edit');
     this.updateLengthCycle(k);
     if (this.divisionPending !== null) {
       if (this.boundary(k)) {
@@ -1502,7 +1656,9 @@ class FM8 extends AudioWorkletProcessor {
       this.port.postMessage({type:'mixApplied',seq:this.mixSeq,changes});
     }
     // Boundary automation uses k; only row playback follows the signed bounce position.
+    this.validateDivisorReference();
     const flipped = this.advancePlayback(k);
+    this.applyDivisorPhase(k);
     let solo = false;
     for (const tr of st.tracks) if (tr.solo) { solo = true; break; }
     const hits = [];
