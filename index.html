@@ -1237,7 +1237,7 @@ class FM8 extends AudioWorkletProcessor {
     this.bounceMode=on; this.bounceCycle=cycle; this.bounceDivisor=divisor;
     this.bounceHigh=Math.max(0,(Math.ceil(cycle/divisor)-1)*divisor);
     if (this.playbackReset) {
-      // Undo and divisor changes deliberately start a fresh traversal at this measure boundary.
+      // Timing-layout and divisor changes start a fresh traversal at this measure boundary.
       this.playTick=on && dir<0 ? this.bounceHigh : 0;
       for(let t=0;t<8;t++) {
         this.tk0[t]=this.playTick;
@@ -1434,13 +1434,18 @@ class FM8 extends AudioWorkletProcessor {
       const cycle=this.patternCycle();
       if((((k-this.patternOrigin)%cycle)+cycle)%cycle===0){
         const u=this.undoPending;this.undoPending=null;this.lastUndo=u;this.undoSeq++;
+        // Sound-only and beat-content Undo must keep the live traversal. Restarting
+        // at an endpoint skips/repeats a beat in reverse and moves ping-pong's turns.
+        const timingChanged=(st.lengthDivisor||1)!==(u.lengthDivisor||1) || st.tracks.some((tr,t)=>
+          tr.len!==u.tracks[t].len || !!tr.rev!==!!u.tracks[t].rev || !!tr.pp!==!!u.tracks[t].pp);
         this.randomChanges = Array.from({length:8}, () => ({}));
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
         this.cancelTimbre();this.bindTimbre();this.setOutputLevels(st, false);
-        this.pend=null;this.lengthPending=null;this.returnTicks=null;
+        this.pend=null;this.lengthPending=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
         for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
-        this.alignDividedTracks(k);this.setGains(st);
+        if(timingChanged){this.returnTicks=null;this.alignDividedTracks(k);}
+        this.setGains(st);
         this.port.postMessage({type:'undoApplied',seq:this.undoSeq,lengthSeq:this.lengthSeq,value:u});
       }
     }
