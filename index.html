@@ -367,6 +367,8 @@ class FM8 extends AudioWorkletProcessor {
     this.mixPending={}; this.mixSeq=0; this.lastMix=null;
     this.undoPending=null; this.undoSeq=0; this.lastUndo=null;
     this.patternOrigin = 0;
+    // The clock stays in full-length steps; divisors only change traversal density.
+    this.gridTick = 0; this.gridBeat = 0;
     this.returnTicks = null;
     this.lengthPending = null; this.lengthSeq = 0; this.lastLengthDivisor = 1;
     this.divisionPending = null; this.divisionSeq = 0; this.lastDivision = null;
@@ -676,6 +678,8 @@ class FM8 extends AudioWorkletProcessor {
       if (after > before && before > 0) for (const hit of this.humanQueue)
         hit.due = this.clock + Math.max(0,Math.round((hit.due-this.clock)*before/after));
     }
+    if (this.st && s.lengthDivisor !== this.st.lengthDivisor)
+      this.anchorGrid(this.unswungTick(this.pos,this.st.lengthDivisor||1,this.st.swing*0.5));
     this.st = s;
     if (shiftChanged) this.resetPatternShift();
     // Manual controls use the same continuous path as Evolution. Rebind replacement
@@ -749,6 +753,7 @@ class FM8 extends AudioWorkletProcessor {
     this.humanSeed = (this.humanSeed + 0x9e3779b9) >>> 0;
     // The measure clock advances in sub-ticks; signed playback is independent.
     this.patternOrigin = 0;
+    this.gridTick = 0; this.gridBeat = 0;
     this.returnTicks = null;
     this.playing = true; this.pos = 0; this.nk = 0; this.pk = 0; this.fired = 0; this.flipArm = false;
     this.transportBoundary = 0;
@@ -1044,7 +1049,7 @@ class FM8 extends AudioWorkletProcessor {
   }
   humanWindow(k) {
     if (this.humanWindowTick === k) return this.humanWindowValue;
-    const st = this.st, rate = Math.abs(st.bpm)*st.spb*(st.lengthDivisor||1)/(60*sampleRate);
+    const st = this.st, rate = Math.abs(st.bpm)*st.spb/(60*sampleRate);
     if (!rate || !st.humanize) return 0;
     const at = this.ev(k), interval = Math.min(at-this.ev(k-1),this.ev(k+1)-at)/rate;
     // At full strength, up to 35 ms either way. Dense/swung grids remain in order.
@@ -1162,7 +1167,8 @@ class FM8 extends AudioWorkletProcessor {
       let anchor = this.tk0[t]+phaseShift, initial = this.ti0[t];
       if (reset || !!tr.pp !== !!this.tpp[t]) {
         anchor = playTick;
-        initial = this.tdir[t]*dir < 0 ? this.trackEndpoint(tr) : 0;
+        const reverseStart = reset && !on ? this.tdir[t] < 0 : this.tdir[t]*dir < 0;
+        initial = reverseStart ? this.trackEndpoint(tr, reset ? on : true) : 0;
       }
       let idx = initial+this.tdir[t]*(playTick-anchor);
       if (tr.pp) {
@@ -1174,23 +1180,28 @@ class FM8 extends AudioWorkletProcessor {
     }
     return {indices,levels};
   }
+  beatAt(k) { return this.gridBeat + (k-this.gridTick)/(this.st.lengthDivisor||1); }
+  anchorGrid(k) { this.gridBeat = this.beatAt(k); this.gridTick = k; }
   ev(k) {
-    const d = this.st.lengthDivisor || 1, q = Math.floor(k / d), f = k / d - q;
+    const beat = this.beatAt(k), q = Math.floor(beat), f = beat - q;
     const sw = this.st.swing * 0.5, q1 = q + 1;
     const a = q + ((((q % 2) + 2) % 2) ? sw : 0), b = q1 + ((((q1 % 2) + 2) % 2) ? sw : 0);
-    return d * (a * (1-f) + b * f);
+    return a * (1-f) + b * f;
   }
   unswungTick(pos, divisor, swing) {
-    const pair = Math.floor(pos / (2 * divisor)), phase = pos / divisor - 2 * pair;
-    return divisor * (2 * pair + (phase <= 1 + swing ? phase / (1 + swing) : 1 + (phase - 1 - swing) / (1 - swing)));
+    const pair = Math.floor(pos / 2), phase = pos - 2 * pair;
+    const beat = 2 * pair + (phase <= 1 + swing ? phase / (1 + swing) : 1 + (phase - 1 - swing) / (1 - swing));
+    return this.gridTick + divisor * (beat-this.gridBeat);
   }
   advance() {
     const st = this.st;
     if (this.humanQueue.length && st.bpm) this.drainHumanHits();
     const cycle = this.evolutionCycle, oldPos = this.pos, divisor = st.lengthDivisor || 1, swing = st.swing * 0.5;
     const cycleLength = cycle ? cycle.length : 1;
-    const rate = Math.abs(st.bpm) * st.spb * divisor / (60 * sampleRate);
+    const rate = Math.abs(st.bpm) * st.spb / (60 * sampleRate);
     const nw = this.pos + rate;
+    // Capture elapsed traversal before a boundary can replace the divisor/anchors.
+    const elapsed = cycle ? Math.max(0,this.unswungTick(nw,divisor,swing)-this.unswungTick(oldPos,divisor,swing))/cycleLength : 0;
     this.pos = nw;
     if (this.delayReturn) this.advanceDelayReturn();
     let budget = 32; // Hard bound: a malformed state must never monopolize the audio thread.
@@ -1203,10 +1214,10 @@ class FM8 extends AudioWorkletProcessor {
       const tick = this.unswungTick(this.pos,d,sw);
       this.pk = Math.ceil(tick)-1; this.nk = Math.floor(tick)+1;
     }
-    if (st.humanize && this.playing) this.advanceHumanPreview(Math.abs(st.bpm)*st.spb*(st.lengthDivisor||1)/(60*sampleRate));
+    if (st.humanize && this.playing) this.advanceHumanPreview(Math.abs(st.bpm)*st.spb/(60*sampleRate));
     // Evolution counts full measures even when playback bounces before a downbeat.
     if (cycle && this.evolutionCycle === cycle) {
-      cycle.left -= Math.max(0,this.unswungTick(nw, divisor, swing) - this.unswungTick(oldPos, divisor, swing)) / cycleLength;
+      cycle.left -= elapsed;
       if (cycle.left <= 1e-9) {
         this.evolutionCycle = null;
         this.port.postMessage({type:'evolutionTurn',id:cycle.id,time:this.clock/sampleRate});
@@ -1241,7 +1252,9 @@ class FM8 extends AudioWorkletProcessor {
       this.playTick=on && dir<0 ? this.bounceHigh : 0;
       for(let t=0;t<8;t++) {
         this.tk0[t]=this.playTick;
-        this.ti0[t]=this.tdir[t]*dir<0 ? this.trackEndpoint(st.tracks[t]) : 0;
+        // Match Play's phase: steady BPM reverse crosses step zero at the boundary.
+        const reverseStart=on && dir<0 ? this.tdir[t]>0 : this.tdir[t]<0;
+        this.ti0[t]=reverseStart ? this.trackEndpoint(st.tracks[t],on) : 0;
         this.thas[t]=0;
       }
       this.playbackReset=false;
@@ -1260,7 +1273,7 @@ class FM8 extends AudioWorkletProcessor {
     return dir!==originalDir;
   }
   boundaryCountdown() {
-    const rate=Math.abs(this.st.bpm)*this.st.spb*(this.st.lengthDivisor||1)/60;
+    const rate=Math.abs(this.st.bpm)*this.st.spb/60;
     if(!this.playing || !rate) return null;
     const cycle=this.patternCycle(), origin=this.patternOrigin;
     const k=origin+Math.ceil((this.nk-origin)/cycle)*cycle;
@@ -1322,6 +1335,8 @@ class FM8 extends AudioWorkletProcessor {
     const cycle=this.patternCycle();
     const boundary=(((k-this.patternOrigin)%cycle)+cycle)%cycle===0;
     const apply=value=>{
+      // Keep this event at the same swung beat when entering or escaping a divisor.
+      this.anchorGrid(k);
       st.lengthDivisor=this.lastLengthDivisor=value;
       this.lengthSeq++;
       this.alignDividedTracks(k);
@@ -1439,6 +1454,7 @@ class FM8 extends AudioWorkletProcessor {
         const timingChanged=(st.lengthDivisor||1)!==(u.lengthDivisor||1) || st.tracks.some((tr,t)=>
           tr.len!==u.tracks[t].len || !!tr.rev!==!!u.tracks[t].rev || !!tr.pp!==!!u.tracks[t].pp);
         this.randomChanges = Array.from({length:8}, () => ({}));
+        this.anchorGrid(k);
         st.tracks=JSON.parse(JSON.stringify(u.tracks));st.lengthDivisor=u.lengthDivisor;
         this.cancelTimbre();this.bindTimbre();this.setOutputLevels(st, false);
         this.pend=null;this.lengthPending=null;
