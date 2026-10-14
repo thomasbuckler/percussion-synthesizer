@@ -1188,7 +1188,7 @@ class FM8 extends AudioWorkletProcessor {
       if (tr.pp) {
         if (period > 0) { const q=((idx%period)+period)%period; idx=q<=endpoint?q:period-q; }
         else idx=((idx%divisor)+divisor)%divisor;
-      } else idx=((idx%len)+len)%len;
+      } else { const span=on ? Math.ceil(len/divisor)*divisor : len; idx=((idx%span)+span)%span; }
       indices[t] = Math.floor(idx/divisor);
       if (idx%divisor === 0 && !tr.mute && (!solo || tr.solo)) levels[t] = tr.steps[indices[t]] || 0;
     }
@@ -1283,24 +1283,17 @@ class FM8 extends AudioWorkletProcessor {
     } else {
       const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
       const raw=((source.playTick%cycle)+cycle)%cycle;
-      this.playTick=on ? Math.min(this.bounceHigh,Math.round(raw/divisor)*divisor) : 0;
+      // Snap ahead in the outgoing direction; nearest rounding can replay the
+      // endpoint that just finished, especially step 1 when entering /3 or /4.
+      this.playTick=on ? Math.min(this.bounceHigh,(dir<0 ? Math.floor : Math.ceil)(raw/divisor)*divisor) : 0;
       for (let t=0;t<8;t++) {
-        const tr=this.st.tracks[t], oldDivisor=source.st.lengthDivisor||1;
-        const oldEndpoint=Math.max(0,tr.len-oldDivisor);
-        const oldPeriod=2*oldEndpoint;
-        let index=source.ti0[t]+source.tdir[t]*(source.playTick-source.tk0[t]);
-        let descending=false;
-        if (tr.pp && oldPeriod>0) {
-          const q=((index%oldPeriod)+oldPeriod)%oldPeriod;
-          descending=q>oldEndpoint; index=descending ? oldPeriod-q : q;
-        } else if (tr.pp) index=((index%oldDivisor)+oldDivisor)%oldDivisor;
-        else index=((index%tr.len)+tr.len)%tr.len;
+        const tr=this.st.tracks[t], point=source.traversalPoint(t);
         const endpoint=Math.max(0,tr.len-divisor);
         const maximum=tr.pp ? Math.floor(endpoint/divisor)*divisor :
           Math.max(0,(Math.ceil(tr.len/divisor)-1)*divisor);
-        const mapped=Math.max(0,Math.min(maximum,Math.round(index/divisor)*divisor));
+        const mapped=Math.max(0,Math.min(maximum,(point.motion<0 ? Math.floor : Math.ceil)(point.index/divisor)*divisor));
         this.tk0[t]=this.playTick;
-        this.ti0[t]=tr.pp && descending && endpoint>0 ? 2*endpoint-mapped : mapped;
+        this.ti0[t]=tr.pp && point.reflected && endpoint>0 ? 2*endpoint-mapped : mapped;
       }
       this.playTickStarted=true; this.playbackReset=false;
     }
@@ -1432,21 +1425,21 @@ class FM8 extends AudioWorkletProcessor {
       raw=motion<0 ? this.trackEndpoint(tr) : 0;
       hasPrevious=false;
     }
-    let index;
+    let index, reflected=false;
     if (tr.pp && period>0) {
       const q=((raw%period)+period)%period;
-      index=q<=endpoint ? q : period-q;
+      reflected=q>endpoint; index=reflected ? period-q : q;
       // At a fold, the note belongs to the arriving leg. On Play or a row
       // reset it instead starts the outgoing leg; that is not a completed pass.
       if (q===0) motion=hasPrevious ? -1 : 1;
       else if (q===endpoint) motion=hasPrevious ? 1 : -1;
       else if (q>endpoint) motion=-motion;
     } else {
-      const span=tr.pp ? d : len;
+      const span=tr.pp ? d : this.st.transportPingPong ? Math.ceil(len/d)*d : len;
       index=((raw%span)+span)%span;
     }
     const last=this.trackEndpoint(tr);
-    return {index,grid:index%d===0,last,
+    return {index,motion,reflected,grid:index%d===0,last,
       end:last===0 || index===(motion<0 ? 0 : last)};
   }
   divisorBoundaryTick(first=this.nk, budget=256) {
@@ -1745,7 +1738,9 @@ class FM8 extends AudioWorkletProcessor {
       }
       let idx = this.ti0[t] + this.tdir[t] * (this.playTick - this.tk0[t]);
       if (this.tpp[t]) { if(P > 0){const q = ((idx % P) + P) % P; idx = q <= endpoint ? q : P-q;} else idx = ((idx % divisor)+divisor)%divisor; }
-      else idx = ((idx % len) + len) % len;
+      // A global bounce uses whole visible cells. Match its grid when wrapping
+      // reversed rows, or an off-grid wrap can sound twice around the same turn.
+      else { const span=st.transportPingPong ? Math.ceil(len/divisor)*divisor : len; idx=((idx%span)+span)%span; }
       // Internal sub-ticks do not begin a new visible note. In reverse, floor()
       // alone moved the playhead into the next cell before that cell sounded.
       this.idxOut[t] = Math.floor((idx % divisor === 0 || !this.thas[t] ? idx : this.tlastI[t]) / divisor);
