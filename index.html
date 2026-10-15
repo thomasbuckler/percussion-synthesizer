@@ -76,7 +76,7 @@ header.bar>.header-dials{flex:0 0 100%}
 .seqtop{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-bottom:12px}
 .rows{padding-block:6px 4px}
 .row{display:flex;align-items:center;gap:0;min-width:max-content;padding-block:4px}
-.row .name{width:104px;text-align:left;overflow:hidden;text-overflow:ellipsis}
+.row .name{width:32px;text-align:center;padding-inline:3px;overflow:hidden;text-overflow:ellipsis}
 .row .name.hit{background:var(--fg);color:var(--bg)}
 .row .name.on.hit{background:var(--bg);color:var(--fg)}
 .row .sm{padding:4px 5px;min-width:22px}
@@ -128,7 +128,7 @@ canvas.env{width:100%;height:54px;display:block;border:1px solid var(--fg);margi
 .ctrlrow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 
 @media (max-width:1100px){.ops{grid-template-columns:repeat(2,minmax(0,1fr))}.edgrid{grid-template-columns:1fr}}
-@media (max-width:620px){.ops{grid-template-columns:1fr}.pgrid{grid-template-columns:repeat(2,minmax(0,1fr))}#scope{width:120px}.row .name{width:78px}}
+@media (max-width:620px){.ops{grid-template-columns:1fr}.pgrid{grid-template-columns:repeat(2,minmax(0,1fr))}#scope{width:120px}.row .name{width:32px}}
 @media (prefers-reduced-motion:reduce){.row .name.hit{background:var(--bg);color:var(--fg);text-decoration:underline}}
 
 .step-group{min-width:0;max-width:100%}#div{flex-wrap:wrap}#div button{flex-shrink:0}
@@ -335,9 +335,11 @@ function divisorPosition(raw, len, from, to) {
   return (stepOffset(len,old,from.divisorTail)+raw/old-stepOffset(len,d,to.divisorTail))*d;
 }
 // One row geometry for audible playback, look-ahead and traversal boundaries.
-// Row ping-pong retains its fractional endpoint; global bounce wraps whole cells.
+// The last source cell keeps only its exact fractional duration at a turn.
 function rowIndex(raw, len, divisor, pingPong, globalPingPong, point, motion=0, hasPrevious=false) {
-  const endpoint=Math.max(0,len-divisor), period=2*endpoint;
+  len=Math.max(1,Math.min(64,len|0));
+  const endpoint=Math.max(0,(Math.ceil(len/divisor)-1)*divisor);
+  const period=endpoint ? 2*endpoint-divisor+(len-endpoint) : 0;
   let index, reflected=false;
   if (pingPong && period>0) {
     const q=((raw%period)+period)%period;
@@ -346,11 +348,10 @@ function rowIndex(raw, len, divisor, pingPong, globalPingPong, point, motion=0, 
     else if (q===endpoint) motion=hasPrevious ? 1 : -1;
     else if (reflected) motion=-motion;
   } else {
-    const span=pingPong ? divisor : globalPingPong ? Math.ceil(len/divisor)*divisor : len;
-    index=((raw%span)+span)%span;
+    index=((raw%len)+len)%len;
   }
   if (point) {
-    const last=pingPong ? Math.floor(endpoint/divisor)*divisor : Math.max(0,(Math.ceil(len/divisor)-1)*divisor);
+    const last=endpoint;
     point.index=index; point.motion=motion; point.reflected=reflected;
     point.grid=index%divisor===0; point.last=last;
     point.end=last===0 || index===(motion<0 ? 0 : last);
@@ -411,7 +412,7 @@ class FM8 extends AudioWorkletProcessor {
     this.patternOrigin = 0;
     // The clock stays in full-length steps; divisors only change traversal density.
     this.gridTick = 0; this.gridBeat = 0;
-    this.divisorReference=null; this.divisorPhase=null;
+    this.divisorPhase=null;
     this.meterLength = 1; this.lengthChangedTick = -Infinity;
     this.returnTicks = null;
     this.lengthPending = null; this.lengthSeq = 0; this.lastLengthDivisor = 1;
@@ -462,7 +463,7 @@ class FM8 extends AudioWorkletProcessor {
     if (this.clock - this.errAt > sampleRate) { this.errAt = this.clock; this.port.postMessage({ type: 'engineError', message: msg || '' }); }
   }
   resetSync() {
-    this.divisorReference=null; this.divisorPhase=null;
+    this.divisorPhase=null;
     this.clearHumanTiming(true);
     this.cancelTimbre();
     this.outputLevelFrames = this.outputLevelCount = 0;
@@ -727,7 +728,6 @@ class FM8 extends AudioWorkletProcessor {
       if (after > before && before > 0) for (const hit of this.humanQueue)
         hit.due = this.clock + Math.max(0,Math.round((hit.due-this.clock)*before/after));
     }
-    this.validateDivisorReference(s,true);
     if (this.st && s.lengthDivisor !== this.st.lengthDivisor)
       this.anchorGrid(this.unswungTick(this.pos,this.st.lengthDivisor||1,this.st.swing*0.5));
     this.st = s;
@@ -801,7 +801,7 @@ class FM8 extends AudioWorkletProcessor {
     }
   }
   start() {
-    this.divisorReference=null; this.divisorPhase=null;
+    this.divisorPhase=null;
     this.clearHumanTiming(true);
     this.humanSeed = (this.humanSeed + 0x9e3779b9) >>> 0;
     // The measure clock advances in sub-ticks; signed playback is independent.
@@ -851,7 +851,7 @@ class FM8 extends AudioWorkletProcessor {
     else if (d.type === 'delayControl') this.controlDelay(d);
     else if (d.type === 'timbre') this.applyTimbre(d);
     else if (d.type === 'play') this.start();
-    else if (d.type === 'stop') { this.divisorReference=null; this.divisorPhase=null; this.clearHumanTiming(true); if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.resetPatternShift(0); this.cancelStepRotate(); this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
+    else if (d.type === 'stop') { this.divisorPhase=null; this.clearHumanTiming(true); if(this.recording){this.port.postMessage({type:'recordError',id:this.recording.id,message:'Recording cancelled: playback stopped.'});this.recording=null;} this.playing = false; this.resetPatternShift(0); this.cancelStepRotate(); this.finishDelayReturn(); this.flipArm = false; this.transportBoundary = null; this.randomPing = null; this.evolutionCycle = null; this.revArm.fill(0); this.pend = null; this.divisionPending = null; this.lengthPending = null; this.undoPending=null; this.mixPending={}; }
     else if (d.type === 'stepRotate') this.queueStepRotate(d);
     else if (d.type === 'stepRotateCancel') {
       this.cancelStepRotate();
@@ -894,7 +894,7 @@ class FM8 extends AudioWorkletProcessor {
     }
     else if (d.type === 'randomPingNext') { if (this.randomPing && this.randomPing.id === d.id) this.randomPing.tracks = d.tracks || null; }
     else if (d.type === 'randomPingDivisorHold' && this.st) this.st.randomPingDivisorHold = !!d.on;
-    else if (d.type === 'transportPingPong' && this.st) { if(this.st.transportPingPong!==!!d.on)this.invalidateDivisorReference(); this.st.transportPingPong = !!d.on; }
+    else if (d.type === 'transportPingPong' && this.st) { this.st.transportPingPong = !!d.on; }
     else if (d.type === 'flipArm') { this.flipArm = !!d.on; this.flipArmId = Number.isSafeInteger(d.id) ? d.id : 0; }
     else if (d.type === 'revArm') this.revArm[d.t] = d.on ? 1 : 0;
     else if (d.type === 'mixPending') { const key=d.t+':'+d.key; if(d.value===null)delete this.mixPending[key];else this.mixPending[key]={t:d.t,key:d.key,value:!!d.value,id:d.id}; }
@@ -1247,55 +1247,19 @@ class FM8 extends AudioWorkletProcessor {
     for (const key of TRANSPORT_ARRAYS) ref[key].set(this[key]);
     return ref;
   }
-  invalidateDivisorReference() {
-    this.divisorReference=null;
-    // A staged restoration must not overwrite a control committed later in the
-    // same fireStep. A mapped entry can safely finish; row controls run after it.
-    if (this.divisorPhase?.restore) this.divisorPhase=null;
-  }
-  validateDivisorReference(state=this.st, manualDirection=false) {
-    const ref=this.divisorReference;
-    if (!ref) return false;
-    if (!!state.transportPingPong!==ref.st.transportPingPong ||
-        state.tracks.some((tr,t)=>tr.len!==ref.st.tracks[t].len ||
-          !!tr.rev!==ref.st.tracks[t].rev || !!tr.pp!==ref.st.tracks[t].pp) ||
-        (manualDirection && Math.sign(state.bpm)!==Math.sign(this.st.bpm))) {
-      this.invalidateDivisorReference();
-      return false;
-    }
-    return true;
-  }
-  advanceDivisorReference() {
-    const ref=this.divisorReference;
-    if (!ref) return;
-    // Usual work is one comparison per audio sample. The bound also covers a
-    // large live Swing edit without an unbounded loop on the audio thread.
-    let budget=32;
-    while (this.swungBeat(ref.nextBeat)<=this.pos && budget-- > 0) {
-      ref.advancePlayback(ref.nextTick++);
-      ref.lastBeat=ref.nextBeat; ref.nextBeat+=1;
-    }
-    if (budget<0) this.invalidateDivisorReference();
-  }
   queueDivisorPhase(k, value) {
-    const old=this.st.lengthDivisor||1, beat=this.beatAt(k);
+    const old=this.st.lengthDivisor||1;
     if (value===old) return;
-    // Predict this event in the outgoing layout, before changing the divisor.
-    // This includes a manual Flip queued for the same boundary.
-    const source=this.snapshotTransport();
-    source.advancePlayback(k);
-    if (old===1 && value>1) {
-      source.lastBeat=beat; source.nextBeat=beat+1; source.nextTick=k+1;
-      source.flipArm=false;
-      this.divisorReference=source;
-    }
-    const valid=this.validateDivisorReference();
-    const ref=valid ? this.divisorReference : null;
-    // An automatic escape lands on an original full-step event. If a manual
-    // escape occurs at a fractional full step, map its phase instead of copying
-    // an old event or pretending the reference already reached the next one.
-    const restore=value===1 && ref && Math.abs(ref.lastBeat-beat)<1e-7;
-    this.divisorPhase={k,value,source:restore ? ref : source,restore:!!restore};
+    const source=this.snapshotTransport(), expand=value===1;
+    if (expand) {
+      // Resume from what each row actually played, not a hidden full-length clock.
+      source.lastIndices=Array.from({length:8},(_,t)=>{
+        const tr=source.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
+        return this.thas[t] && this.tlastLen[t]===tr.len && this.tlastDivisor[t]===old
+          ? this.tlastI[t] : (point.motion<0 ? Math.ceil : Math.floor)(point.index/old)*old;
+      });
+    } else source.advancePlayback(k);
+    this.divisorPhase={k,value,source,expand};
   }
   applyDivisorPhase(k) {
     const pending=this.divisorPhase;
@@ -1308,35 +1272,46 @@ class FM8 extends AudioWorkletProcessor {
       this.port.postMessage({type:'flipped',flips:this.flips,bpm:this.st.bpm,
         armed:this.flipArm,armId:this.flipArmId});
     }
-    if (pending.restore) {
-      // Copy only phase. User sound, pattern, mix and automation state stay live.
-      for (const key of ['playTick','playTickStarted','playbackReset','bounceMode',
-          'bounceCycle','bounceDivisor','bounceHigh']) this[key]=source[key];
-      for (const key of ['tdir','tk0','ti0','tpp']) this[key].set(source[key]);
+    if (pending.expand) {
+      const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
+      const old=source.st.lengthDivisor||1, tail=source.st.divisorTail, high=Math.max(0,Math.ceil(cycle)-1);
+      const last=Math.max(0,Math.min(Math.ceil(cycle/old)-1,(dir<0 ? Math.ceil : Math.floor)(source.playTick/old)));
+      // Seed the last visible global cell, then let ordinary full-size stepping
+      // choose its neighbour. Only an original endpoint can reverse the clock.
+      this.playTick=on ? Math.max(0,Math.min(high,stepOffset(cycle,old,tail)+last)) : 0;
+      for (let t=0;t<8;t++) {
+        const tr=this.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
+        const last=Math.max(0,Math.min((tr.len|0)-1,stepOffset(tr.len,old,tail)+source.lastIndices[t]/old));
+        const period=2*Math.max(0,(tr.len|0)-1);
+        this.tk0[t]=this.playTick;
+        this.ti0[t]=tr.pp && point.reflected && period>0 ? period-last : last;
+      }
+      this.playTickStarted=true; this.playbackReset=false;
+      this.bounceMode=on; this.bounceCycle=cycle; this.bounceDivisor=1; this.bounceHigh=high;
     } else {
       const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
+      const high=Math.max(0,(Math.ceil(cycle/divisor)-1)*divisor);
+      const quantize=motion=>motion<0 ? Math.floor : Math.ceil;
       const raw=divisorPosition(((source.playTick%cycle)+cycle)%cycle,cycle,source.st,this.st);
       // Snap ahead in the outgoing direction; nearest rounding can replay the
       // endpoint that just finished, especially step 1 when entering /3 or /4.
-      this.playTick=on ? Math.max(0,Math.min(this.bounceHigh,(dir<0 ? Math.floor : Math.ceil)(raw/divisor)*divisor)) : 0;
+      this.playTick=on ? Math.max(0,Math.min(high,quantize(dir)(raw/divisor)*divisor)) : 0;
       for (let t=0;t<8;t++) {
         const tr=this.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
-        const endpoint=Math.max(0,tr.len-divisor);
-        const maximum=tr.pp ? Math.floor(endpoint/divisor)*divisor :
-          Math.max(0,(Math.ceil(tr.len/divisor)-1)*divisor);
+        const maximum=Math.max(0,(Math.ceil((tr.len|0)/divisor)-1)*divisor);
+        const period=maximum ? maximum+(tr.len|0)-divisor : 0;
         // A reversed row must use the same transport window, mirrored, or its
         // anchor wraps at a different point from the global bounce.
-        const mirror=this.tdir[t]<0 && (source.st.divisorTail || this.st.divisorTail);
+        const mirror=this.tdir[t]<0 && (on || source.st.divisorTail || this.st.divisorTail);
         const position=divisorPosition(mirror ? source.trackEndpoint(tr)-point.index : point.index,tr.len,source.st,this.st);
-        let mapped=Math.max(0,Math.min(maximum,((mirror ? -point.motion : point.motion)<0 ? Math.floor : Math.ceil)(position/divisor)*divisor));
+        let mapped=Math.max(0,Math.min(maximum,quantize(mirror ? -point.motion : point.motion)(position/divisor)*divisor));
         if(mirror)mapped=maximum-mapped;
         this.tk0[t]=this.playTick;
-        this.ti0[t]=tr.pp && point.reflected && endpoint>0 ? 2*endpoint-mapped : mapped;
+        this.ti0[t]=tr.pp && point.reflected && period>0 && mapped<maximum ? period-mapped : mapped;
       }
       this.playTickStarted=true; this.playbackReset=false;
     }
     this.thas.fill(0);
-    if (divisor===1) this.divisorReference=null;
   }
   beatAt(k) { return this.gridBeat + (k-this.gridTick)/(this.st.lengthDivisor||1); }
   anchorGrid(k) { this.gridBeat = this.beatAt(k); this.gridTick = k; }
@@ -1369,7 +1344,6 @@ class FM8 extends AudioWorkletProcessor {
     // Capture elapsed traversal before a boundary can replace the divisor/anchors.
     const elapsed = cycle ? Math.max(0,this.unswungTick(nw,divisor,swing)-this.unswungTick(oldPos,divisor,swing))/cycleLength : 0;
     this.pos = nw;
-    this.advanceDivisorReference();
     if (this.delayReturn) this.advanceDelayReturn();
     let budget = 32; // Hard bound: a malformed state must never monopolize the audio thread.
     if (rate > 0) while (budget-- > 0 && this.playing && this.ev(this.nk) <= nw) {
@@ -1393,17 +1367,11 @@ class FM8 extends AudioWorkletProcessor {
   }
   trackEndpoint(tr, visiblePingPong = true) {
     const d=this.st.lengthDivisor||1;
-    return visiblePingPong && tr.pp ? Math.floor(Math.max(0,tr.len-d)/d)*d : Math.max(0,(Math.ceil(tr.len/d)-1)*d);
+    return Math.max(0,(Math.ceil((tr.len|0)/d)-1)*d);
   }
   advancePlayback(k) {
-    // Restore before normal stepping, so a temporary endpoint cannot emit a
-    // phantom Flip immediately before the reference resumes.
-    if (this.divisorPhase?.k===k && this.divisorPhase.restore) {
-      const before=this.st.bpm;
-      this.applyDivisorPhase(k);
-      if(this.boundary(k))this.transportBoundary=k;
-      return this.st.bpm!==before;
-    }
+    // Expand before stepping so temporary endpoints cannot cause a phantom turn.
+    if (this.divisorPhase?.k===k && this.divisorPhase.expand) this.applyDivisorPhase(k);
     const st=this.st, on=!!st.transportPingPong, cycle=this.patternCycle(), divisor=st.lengthDivisor||1;
     const originalDir=st.bpm<0 ? -1 : 1;
     let dir=originalDir;
@@ -1437,6 +1405,9 @@ class FM8 extends AudioWorkletProcessor {
       let next=this.playTick+dir;
       // A single visible step still advances its sub-phase; holding zero would retrigger every sub-tick.
       if (on && this.bounceHigh>0 && (next<0 || next>this.bounceHigh)) { dir=-dir; next=this.playTick+dir; }
+      // A fractional terminal cell sounds for its remaining sub-ticks, not a whole cell.
+      if (on && this.bounceHigh>0 && Number.isInteger(cycle) && dir<0 && this.playTick===this.bounceHigh)
+        next-=divisor-(cycle-this.bounceHigh);
       this.playTick=next;
     }
     this.playTickStarted=true;
@@ -1690,15 +1661,11 @@ class FM8 extends AudioWorkletProcessor {
         this.pend=null;this.lengthPending=null;
         this.lastLengthDivisor=st.lengthDivisor;this.lengthSeq++;
         for(let t=0;t<8;t++){this.tdir[t]=st.tracks[t].rev?-1:1;this.tpp[t]=st.tracks[t].pp?1:0;this.revArm[t]=0;}
-        if(timingChanged){this.invalidateDivisorReference();this.returnTicks=null;this.alignDividedTracks(k);}
+        if(timingChanged){this.divisorPhase=null;this.returnTicks=null;this.alignDividedTracks(k);}
         this.setGains(st);
         this.undoVisualPending = {type:'undoApplied',seq:this.undoSeq,lengthSeq:this.lengthSeq,value:u};
       }
     }
-    // Cancelled direction requests must not discard the saved continuation.
-    // Only a direction edit that actually lands supersedes that continuation.
-    if(this.boundary(k) && (this.flipArm || this.revArm.some(Boolean)))
-      this.invalidateDivisorReference();
     this.updateLengthCycle(k);
     if (this.divisionPending !== null) {
       if (this.boundary(k)) {
@@ -1737,7 +1704,6 @@ class FM8 extends AudioWorkletProcessor {
       this.port.postMessage({type:'mixApplied',seq:this.mixSeq,changes});
     }
     // Boundary automation uses k; only row playback follows the signed bounce position.
-    this.validateDivisorReference();
     const flipped = this.advancePlayback(k);
     this.applyDivisorPhase(k);
     let solo = false;
@@ -1893,6 +1859,7 @@ const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) 
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const VNAMES = ['off', 'soft', 'low', 'med', 'loud'];
 const copyJSON = value => JSON.parse(JSON.stringify(value));
+const soundName = ti => 'S' + (ti + 1);
 
 /* ---------- formatting & scales ---------- */
 const F = {
@@ -2487,13 +2454,13 @@ function knob(host, label, get, set, fmt, { min = 0, max = 100, step = 1, reset,
   host._label = label => { lab.textContent = label; host.setAttribute('aria-label', label); };
   upd();
 }
-function numField(host, get, set, min, max, label, buttonsOnly) {
+function numField(host, get, set, min, max, label, buttonsOnly, format = String) {
   host.innerHTML = '';
   const dn = el('button', null, '\u2212'), up = el('button', null, '+'), sp = el('span');
   dn.setAttribute('aria-label', label + ' down'); up.setAttribute('aria-label', label + ' up');
   sp.tabIndex = 0; sp.setAttribute('role', 'spinbutton'); sp.setAttribute('aria-label', label);
   host.append(dn, sp, up);
-  const upd = () => { sp.textContent = get(); sp.setAttribute('aria-valuenow', get()); };
+  const upd = () => { const value = get(); sp.textContent = format(value); sp.setAttribute('aria-valuenow', value); };
   const put = v => { v = clamp(Math.round(v), min, max); if (v !== get()) { set(v); } upd(); };
   dn.onclick = () => put(get() - 1); up.onclick = () => put(get() + 1);
   if (buttonsOnly) { sp.classList.add('fixed'); sp.removeAttribute('tabindex'); upd(); host._upd = upd; return; }
@@ -2703,8 +2670,8 @@ function renderSeq() {
   const rows = $('#rows'); rows.innerHTML = ''; rowEls = [];
   state.tracks.forEach((tr, ti) => {
     const row = el('div', 'row');
-    const nm = el('button', 'name' + (ti === sel ? ' sel on' : ''), (ti + 1) + ' ' + tr.name);
-    nm.title = 'Edit and hear ' + tr.name;
+    const nm = el('button', 'name' + (ti === sel ? ' sel on' : ''), soundName(ti));
+    nm.title = 'Edit and hear ' + soundName(ti);
     nm.onclick = () => { select(ti); audition(ti, 4); };
     const m = el('button', 'sm timed' + (tr.mute ? ' on' : ''), 'M'); m.title = 'Mute'; m.setAttribute('aria-pressed', tr.mute);
     m.onclick = () => queueMix(ti,'mute');
@@ -2717,9 +2684,9 @@ function renderSeq() {
     const len = el('span', 'num');
     numField(len, () => tr.len, v => { tr.len = v; buildSteps(ti); sync(); }, 1, 64, 'Length', true);
     const rv = el('button', 'sm rv timed', '\u042f'); rv.title = 'Reverse this track at the end of the pattern. Press again to cancel a pending change.';
-    rv.setAttribute('aria-label', 'Reverse ' + tr.name);
+    rv.setAttribute('aria-label', 'Reverse ' + soundName(ti));
     const pp = el('button', 'sm pp timed'); pp.innerHTML = PP_ICON;
-    pp.title = 'Ping-pong: bounce between the first and last step. While playing, changes wait until the pattern ends; press again to cancel.'; pp.setAttribute('aria-label', 'Ping-pong ' + tr.name);
+    pp.title = 'Ping-pong: bounce between the first and last step. While playing, changes wait until the pattern ends; press again to cancel.'; pp.setAttribute('aria-label', 'Ping-pong ' + soundName(ti));
     pp.classList.toggle('on', !!tr.pp); pp.setAttribute('aria-pressed', !!tr.pp);
     pp.onclick = () => queueMix(ti,'pp');
     rv.onclick = () => {
@@ -2727,16 +2694,23 @@ function renderSeq() {
       else { tr.rev = !tr.rev; sync(); }
       paintRev(ti);
     };
+    const ev = el('button', 'sm track-evolution', 'E'), un = el('button', 'sm track-evolution', 'U');
+    ev.type = un.type = 'button';
+    ev.title = 'Evolve ' + soundName(ti) + ' at 10× and 50% speed. Press again to hold the current sound.';
+    ev.setAttribute('aria-label', 'Evolution ' + soundName(ti));
+    un.title = 'Undo ' + soundName(ti) + ' evolution immediately; restore its sound from before E.';
+    un.setAttribute('aria-label', 'Undo evolution ' + soundName(ti));
+    ev.onclick = () => toggleTrackEvolution(ti); un.onclick = () => undoTrackEvolution(ti);
     const left = stepRotateButton(ti, -1), right = stepRotateButton(ti, 1);
     const steps = el('div', 'steps');
-    row.append(nm, m, s, rv, pp, c, len, left, steps, right);
+    row.append(nm, m, s, rv, ev, un, pp, c, len, left, steps, right);
     rows.append(row);
-    rowEls[ti] = { row, nm, steps, cells: [], now: -1, c, rv, m, s, pp, left, right };
+    rowEls[ti] = { row, nm, steps, cells: [], now: -1, c, rv, m, s, ev, un, pp, left, right };
     paintRev(ti);
     buildSteps(ti);
     bindPaint(ti, steps);
   });
-  paintMix(); paintStepRotate();
+  paintMix(); paintStepRotate(); paintTrackEvolution();
 }
 const revArm = new Array(8).fill(false);
 // ping-pong glyph: forward arrow on top, backward arrow below, 1px strokes
@@ -2745,14 +2719,14 @@ const PP_PAUSE_ICON = PP_ICON.replace('</svg>', '<path d="M1 11L13 1" stroke-wid
 const STEP_LEFT_ICON = '<svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path d="M13 6H1M5.5 1.5L1 6L5.5 10.5"/></svg>';
 const STEP_RIGHT_ICON = '<svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 6H13M8.5 1.5L13 6L8.5 10.5"/></svg>';
 function stepRotateTitle(track, direction) {
-  return 'Shift ' + (track < 0 ? 'all patterns' : state.tracks[track].name) + ' one step ' + (direction < 0 ? 'left' : 'right') + ' at the end of this measure (immediately when stopped). Each press adds one shift. Beats wrap within each full pattern; velocities stay with the beats.';
+  return 'Shift ' + (track < 0 ? 'all patterns' : soundName(track)) + ' one step ' + (direction < 0 ? 'left' : 'right') + ' at the end of this measure (immediately when stopped). Each press adds one shift. Beats wrap within each full pattern; velocities stay with the beats.';
 }
 function stepRotateButton(track, direction) {
   const b = el('button', 'sm step-rotate timed ' + (direction < 0 ? 'left' : 'right'));
   b.type = 'button'; b.innerHTML = direction < 0 ? STEP_LEFT_ICON : STEP_RIGHT_ICON;
   b.dataset.rotateTrack = track; b.dataset.rotateDirection = direction;
   b.title = stepRotateTitle(track, direction);
-  b.setAttribute('aria-label', 'Shift track ' + (track + 1) + ' ' + state.tracks[track].name + ' one step ' + (direction < 0 ? 'left' : 'right'));
+  b.setAttribute('aria-label', 'Shift ' + soundName(track) + ' one step ' + (direction < 0 ? 'left' : 'right'));
   b.onclick = () => queueStepRotate(track, direction);
   return b;
 }
@@ -2984,20 +2958,17 @@ function renderEditor() {
   envCanvases = [];
   // header
   const head = el('div', 'edhead');
-  const idx = el('span', 'idx', String(sel + 1).padStart(2, '0'));
-  const nm = el('input', 'nm'); nm.id = 'inst-name'; nm.value = tr.name; nm.setAttribute('aria-label', 'Instrument name'); nm.maxLength = 14;
-  nm.addEventListener('input', () => { tr.name = nm.value || 'Untitled'; rowEls[sel].nm.textContent = (sel + 1) + ' ' + tr.name; saveLocal(); });
-  nm.addEventListener('keydown', e => e.stopPropagation());
+  const nm = el('span', 'nm', soundName(sel)); nm.id = 'inst-name';
   const hear = el('div', 'grp'); hear.append(el('span', 'cap', 'Hear'));
   const hs = el('div', 'seg'); [1, 2, 3, 4].forEach(v => { const b = el('button', null, VNAMES[v]); b.onclick = () => audition(sel, v); hs.append(b); }); hear.append(hs);
   const acts = el('div', 'grp');
-  const bR = el('button', null, 'Randomize'); bR.onclick = () => { stopRandomPing(); resetTrail(); pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
+  const bR = el('button', null, 'Randomize'); bR.onclick = () => { stopRandomPing(); resetTrail(sel); pushUndo(); randomizeInst(tr, wild / 100); renderAll(); audition(sel, 4); };
   const bM = el('button', null, 'Mutate'); bM.title = 'Nudge every parameter slightly'; bM.onclick = () => { stopRandomPing(); pushUndo(); mutate(tr, 0.06); renderEditor(); sync(); audition(sel, 4); };
-  const bI = el('button', null, 'Init'); bI.onclick = () => { stopRandomPing(); resetTrail(); pushUndo(); const keep = { steps: tr.steps, len: tr.len, mute: tr.mute, solo: tr.solo, rev: tr.rev, pp: tr.pp, name: tr.name }; state.tracks[sel] = mkInst(Object.assign({ mx: mxOf({ '0,1': 1 }), ops: [{}, { d1: 60 }, { lvl: 0 }, { lvl: 0 }] }, keep)); renderAll(); };
+  const bI = el('button', null, 'Init'); bI.onclick = () => { stopRandomPing(); resetTrail(sel); pushUndo(); const keep = { steps: tr.steps, len: tr.len, mute: tr.mute, solo: tr.solo, rev: tr.rev, pp: tr.pp, name: tr.name }; state.tracks[sel] = mkInst(Object.assign({ mx: mxOf({ '0,1': 1 }), ops: [{}, { d1: 60 }, { lvl: 0 }, { lvl: 0 }] }, keep)); renderAll(); };
   const bC = el('button', null, 'Copy'); bC.onclick = () => { clip = JSON.stringify(tr); bP.disabled = false; };
-  const bP = el('button', null, 'Paste'); bP.disabled = !clip; bP.onclick = () => { if (!clip) return; stopRandomPing(); resetTrail(); pushUndo(); const src = JSON.parse(clip); src.steps = tr.steps; src.len = tr.len; src.mute = tr.mute; src.solo = tr.solo; src.rev = tr.rev; src.pp = tr.pp; state.tracks[sel] = mkInst(src); renderAll(); };
+  const bP = el('button', null, 'Paste'); bP.disabled = !clip; bP.onclick = () => { if (!clip) return; stopRandomPing(); resetTrail(sel); pushUndo(); const src = JSON.parse(clip); src.steps = tr.steps; src.len = tr.len; src.mute = tr.mute; src.solo = tr.solo; src.rev = tr.rev; src.pp = tr.pp; state.tracks[sel] = mkInst(src); renderAll(); };
   acts.append(bR, bM, bI, bC, bP);
-  head.append(idx, nm, hear, acts);
+  head.append(nm, hear, acts);
   ed.append(head);
 
   // voice + matrix
@@ -3177,6 +3148,50 @@ function genRhythm(tr, dens) {
 let evolving = false, evolutionSpeed = 25, evolutionTime = null, evolutionPaint = 0;
 let evolutionMultiplier = 1;
 let evolutionCycleId = 0;
+const newTrackEvolution = () => ({active: false, hold: false, baseline: null});
+let trackEvolution = Array.from({length: 8}, newTrackEvolution);
+function trackTimbreFields(ti) { return timbreFields().filter(f => f.t === ti); }
+function captureTrackTimbre(ti) { return trackTimbreFields(ti).map(f => f.o[f.s.k]); }
+function clearTrackMotion(ti) {
+  for (const id of evolutionMotion.keys()) if (id.startsWith(ti + ':')) evolutionMotion.delete(id);
+}
+function clearGlobalMotion() {
+  for (const id of evolutionMotion.keys()) if (!trackEvolution[+id.split(':', 1)[0]]?.active) evolutionMotion.delete(id);
+}
+function resetTrackEvolution(ti = -1) {
+  trackEvolution.forEach((e, t) => { if (ti < 0 || ti === t) { trackEvolution[t] = newTrackEvolution(); clearTrackMotion(t); } });
+  paintTrackEvolution();
+}
+function releaseTrackHolds() { trackEvolution.forEach(e => e.hold = false); }
+function paintTrackEvolution() {
+  rowEls.forEach((r, ti) => {
+    r.ev.classList.toggle('on', trackEvolution[ti].active);
+    r.ev.setAttribute('aria-pressed', trackEvolution[ti].active);
+    r.un.title = trackEvolution[ti].baseline ? 'Restore ' + soundName(ti) + ' to its pre-E sound immediately.' : 'Start E on ' + soundName(ti) + ' to capture its undo sound.';
+  });
+}
+function sendTimbre() {
+  if (!node) return;
+  const f = timbreFields(), v = new Float64Array(f.length);
+  for (let i = 0; i < f.length; i++) v[i] = f[i].o[f[i].s.k];
+  node.port.postMessage({type: 'timbre', v, rs: state.randSeq || 0, us: state.undoSeq || 0}, [v.buffer]);
+}
+function toggleTrackEvolution(ti) {
+  if (sessionLoading) return;
+  const e = trackEvolution[ti];
+  if (e.active) { e.active = false; e.hold = true; }
+  else { pushUndo(); e.baseline = captureTrackTimbre(ti); e.active = true; e.hold = false; }
+  clearTrackMotion(ti); paintTrackEvolution(); saveLocal();
+}
+function undoTrackEvolution(ti) {
+  if (sessionLoading) return;
+  const e = trackEvolution[ti]; if (!e.baseline) return;
+  e.active = false; e.hold = true;
+  trackTimbreFields(ti).forEach((f, i) => f.o[f.s.k] = e.baseline[i]);
+  clearTrackMotion(ti); sendTimbre(); paintTrackEvolution();
+  if (ti === sel) renderEditor();
+  sync();
+}
 let devolving = false, evolutionTrail = [], trailTime = 0, trailSample = 0;
 // Cached list of every evolving field, rebuilt only when the kit's objects are replaced.
 // entry: o = owner object, s = full-range spec, id = walker id, e = spec used while drifting (or null), lim = soft ceiling, mx = matrix cell
@@ -3197,12 +3212,12 @@ function timbreFields() {
   const fields = [], refs = [];
   state.tracks.forEach((tr, ti) => {
     refs.push(tr, tr.ops, tr.mx);
-    ['decS', 'idx', 'drive'].forEach(k => fields.push({ o: tr, s: INST_BY[k], id: ti + ':' + k, e: null, lim: 0, mx: false }));
+    ['decS', 'idx', 'drive'].forEach(k => fields.push({ t: ti, o: tr, s: INST_BY[k], id: ti + ':' + k, e: null, lim: 0, mx: false }));
     tr.ops.forEach((op, oi) => {
       refs.push(op);
-      ['a', 'h', 'd1', 'brk', 'd2', 'curve'].forEach(k => fields.push({ o: op, s: OP_BY[k], id: ti + ':' + oi + ':' + k, e: EV_LIMIT[k] ? Object.assign({}, OP_BY[k], { max: EV_LIMIT[k] }) : null, lim: EV_LIMIT[k] || 0, mx: false }));
+      ['a', 'h', 'd1', 'brk', 'd2', 'curve'].forEach(k => fields.push({ t: ti, o: op, s: OP_BY[k], id: ti + ':' + oi + ':' + k, e: EV_LIMIT[k] ? Object.assign({}, OP_BY[k], { max: EV_LIMIT[k] }) : null, lim: EV_LIMIT[k] || 0, mx: false }));
     });
-    tr.mx.forEach((row, i) => { refs.push(row); row.forEach((v, k) => fields.push({ o: row, s: { k, min: 0, max: 12 }, id: ti + ':mx:' + i + ':' + k, e: { k, min: 0.001, max: 12, sc: 'log' }, lim: 0, mx: true })); });
+    tr.mx.forEach((row, i) => { refs.push(row); row.forEach((v, k) => fields.push({ t: ti, o: row, s: { k, min: 0, max: 12 }, id: ti + ':mx:' + i + ':' + k, e: { k, min: 0.001, max: 12, sc: 'log' }, lim: 0, mx: true })); });
   });
   fieldRefs = { tracks: state.tracks, list: refs }; fieldCache = fields;
   return fields;
@@ -3216,8 +3231,8 @@ function recordTrail() {
   // Bound memory for long sessions, retaining the original and the whole route.
   if (evolutionTrail.length > 8000) evolutionTrail = evolutionTrail.filter((_, i, a) => i % 2 === 0 || i === a.length - 1);
 }
-function resetTrail() {
-  stopEvolution(); evolutionTrail = []; trailTime = trailSample = 0; paintEvolution();
+function resetTrail(ti = -1) {
+  stopEvolution(); resetTrackEvolution(ti); evolutionTrail = []; trailTime = trailSample = 0; paintEvolution();
 }
 function changeRandomSounds(change) {
   // Keep the evolution phase and measure clock independent of kit switching.
@@ -3226,6 +3241,8 @@ function changeRandomSounds(change) {
   if (active) recordTrail();
   const before = active ? evolutionTrail.at(-1).values : null;
   change();
+  // A replacement sound becomes the local undo point; never restore a previous kit.
+  trackEvolution.forEach((e, ti) => { if (e.baseline) e.baseline = captureTrackTimbre(ti); });
   if (active) {
     const fields = timbreFields(), current = captureTimbre();
     for (let i = 0; i < fields.length; i++) {
@@ -3263,7 +3280,8 @@ function reverseTimbre(dt) {
   while (evolutionTrail.length > 2 && evolutionTrail[evolutionTrail.length - 2].t >= trailTime) evolutionTrail.pop();
   const a = evolutionTrail[Math.max(0, evolutionTrail.length - 2)], b = evolutionTrail.at(-1);
   const f = b.t > a.t ? clamp((trailTime - a.t) / (b.t - a.t), 0, 1) : 0;
-  timbreFields().forEach(({ o, s: spec }, i) => {
+  timbreFields().forEach(({ o, s: spec, t }, i) => {
+    if (trackEvolution[t].active || trackEvolution[t].hold) return;
     o[spec.k] = trailTime === 0 ? evolutionTrail[0].values[i] : toVal(spec, toNorm(spec, a.values[i]) * (1-f) + toNorm(spec, b.values[i]) * f);
   });
   if (trailTime === 0) {
@@ -3276,7 +3294,7 @@ let evolutionTouch = false;
 const evolutionMotion = new Map();
 // Pause for manual sound edits, but keep moving while global evolution or tail controls are held.
 document.addEventListener('pointerdown', e => {
-  evolutionTouch = !e.target.closest('#kEvolve, #evolve, #evolveFast, #evolutionLoop, #kShortenDelay, .delay-auto');
+  evolutionTouch = !e.target.closest('#kEvolve, #evolve, #evolveFast, #evolutionLoop, #kShortenDelay, .delay-auto, .track-evolution');
 });
 document.addEventListener('pointerup', () => evolutionTouch = false);
 document.addEventListener('pointercancel', () => evolutionTouch = false);
@@ -3309,13 +3327,13 @@ function startEvolution(fresh = false, at = ctx ? ctx.currentTime * 1000 : null)
   devolving = false;
   if (fresh) { evolutionTrail = []; trailTime = trailSample = 0; }
   if (!evolutionTrail.length) { trailTime = 0; recordTrail(); }
-  evolving = true; evolutionTime = at; evolutionMotion.clear();
+  evolving = true; evolutionTime = at; clearGlobalMotion();
   armEvolutionCycle(); paintEvolution();
 }
 function startDevolution(at = ctx ? ctx.currentTime * 1000 : null) {
   recordTrail();
   if (evolutionTrail.length < 2) return false;
-  evolving = false; devolving = true; evolutionTime = at; evolutionMotion.clear();
+  evolving = false; devolving = true; evolutionTime = at; clearGlobalMotion();
   armEvolutionCycle();
   paintEvolution();
   return true;
@@ -3328,7 +3346,7 @@ function landEvolutionTurn(d) {
 }
 function stopEvolution(kept = false) {
   if (evolving || devolving) recordTrail();
-  evolving = devolving = false; evolutionTime = null; evolutionMotion.clear();
+  evolving = devolving = false; clearGlobalMotion();
   armEvolutionCycle();
   paintEvolution();
   if (kept) {
@@ -3344,15 +3362,16 @@ function evolveTick(now) {
   if (evolutionTime !== null && now <= evolutionTime) return;
   // Resume with one ordinary step after a UI stall, never a catch-up jump.
   const interval = 1024 / (ctx ? ctx.sampleRate : 48000);
-  const dt = (evolutionTime === null ? 0 : Math.min(interval, (now - evolutionTime) / 1000)) * (evolutionSpeed / 100) * evolutionMultiplier;
+  const elapsed = evolutionTime === null ? 0 : Math.min(interval, (now - evolutionTime) / 1000);
+  const dt = elapsed * (evolutionSpeed / 100) * evolutionMultiplier;
   evolutionTime = now;
-  if (!(evolving || devolving) || !playing || !ctx || ctx.state !== 'running' || evolutionTouch || (document.activeElement?.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) return;
-  if (dt <= 0) return;   // 0% holds both the current sound and its saved motion path.
-  if (devolving) reverseTimbre(dt);
-  else {
+  const localActive = trackEvolution.some(e => e.active), forward = evolving;
+  if (!(evolving || devolving || localActive) || !playing || !ctx || ctx.state !== 'running' || evolutionTouch || (document.activeElement?.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) return;
+  if (elapsed <= 0 || (dt <= 0 && !localActive)) return;
+  if (devolving && dt > 0) reverseTimbre(dt);
   // Preserve the former 100% rate; the dial now changes only the motion clock.
   const speed = 0.0757;
-  const move = (obj, spec, id, weight = 1) => {
+  const move = (obj, spec, id, dt, weight = 1) => {
     let m = evolutionMotion.get(id);
     if (!m) { m = { v: 0, target: Math.random() * 2 - 1, remaining: 0 }; evolutionMotion.set(id, m); }
     m.remaining -= dt;
@@ -3365,21 +3384,20 @@ function evolveTick(now) {
   // Timbre only: preserve tuning, ratios, fixed frequencies, detune and pitch envelopes.
   const fields = timbreFields();
   for (let i = 0; i < fields.length; i++) {
-    const f = fields[i];
+    const f = fields[i], e = trackEvolution[f.t];
+    const motionDt = e.active ? elapsed * 5 : forward && !e.hold ? dt : 0;
+    if (motionDt <= 0) continue;
     if (f.mx && !(f.o[f.s.k] > 0)) continue;   // matrix: only live connections drift
     let spec = f.e || f.s;
     if (f.lim && f.o[spec.k] > f.lim) spec = Object.assign({}, spec, { max: f.o[spec.k] });   // a value already past the ceiling is left to move freely
-    move(f.o, spec, f.id);
+    move(f.o, spec, f.id, motionDt);
   }
-  trailTime += dt; trailSample += dt;
-  if (trailSample >= 0.05) { recordTrail(); trailSample = 0; paintEvolution(); }
+  if (forward && dt > 0) {
+    trailTime += dt; trailSample += dt;
+    if (trailSample >= 0.05) { recordTrail(); trailSample = 0; paintEvolution(); }
   }
   // Use the existing live DSP path; no voice restart, no graph reconstruction.
-  if (node) {
-    const f = timbreFields(), v = new Float64Array(f.length);
-    for (let i = 0; i < f.length; i++) v[i] = f[i].o[f[i].s.k];
-    node.port.postMessage({ type: 'timbre', v, rs: state.randSeq || 0, us: state.undoSeq || 0 }, [v.buffer]);
-  }
+  sendTimbre();
   if (!document.hidden && now - evolutionPaint > 150) {
     document.querySelectorAll('.p, .mc').forEach(e => { if (e._upd) e._upd(); });
     drawPitch(); for (let i = 0; i < 4; i++) drawEnv(i);
@@ -3392,19 +3410,19 @@ function renderAll() { renderSeq(); renderEditor(); sync(); }
 $('#play').onclick = togglePlay;
 $('#evolve').onclick = () => {
   if (evolving) { stopEvolution(true); return; }
-  pushUndo();
+  pushUndo(); releaseTrackHolds();
   startEvolution(state.evolutionPingPong);
 };
 $('#devolve').onclick = () => {
   if (devolving) { stopEvolution(true); return; }
   if (evolutionTrail.length < 2) return;
-  pushUndo(); startDevolution();
+  pushUndo(); releaseTrackHolds(); startDevolution();
 };
 $('#devolve').title = 'Retrace the evolution path backwards to the starting kit, at the current Speed dial rate.';
 $('#evolutionPing').innerHTML = PP_ICON;
 $('#evolutionPing').onclick = () => {
   state.evolutionPingPong = !state.evolutionPingPong;
-  if (state.evolutionPingPong && !devolving) { pushUndo(); startEvolution(true); }
+  if (state.evolutionPingPong && !devolving) { pushUndo(); releaseTrackHolds(); startEvolution(true); }
   else { armEvolutionCycle(); paintEvolution(); }
   saveLocal();
 };
@@ -3689,7 +3707,7 @@ seg($('#lengthDivide'), [[2,'/2'],[3,'/3'],[4,'/4'],[8,'/8'],[16,'/16']], () => 
 $('#autoReturn').onclick=()=>{state.autoReturn=!state.autoReturn;paintLengthDivision();sync();};
 $('#autoReturn').title='Repeat the divided pattern for one original-length cycle, then restore full steps.';
 $('#lengthDivide').title = 'Change loop length after the first longest track finishes its current pass, in either direction. Press the selected divisor to queue full length; press a queued choice again to cancel.';
-numField($('#lenAll'), () => Number((Math.max(...state.tracks.map(t => t.len)) / visualLengthDivisor).toFixed(5)), v => { state.lengthDivisor = 1; state.divisorTail = false; state.tracks.forEach(t => t.len = v); renderSeq(); sync(); }, 1, 64, 'Steps', true);
+numField($('#lenAll'), () => Math.max(...state.tracks.map(t => t.len)) / visualLengthDivisor, v => { state.lengthDivisor = 1; state.divisorTail = false; state.tracks.forEach(t => t.len = v); renderSeq(); sync(); }, 1, 64, 'Steps', true, Math.floor);
 numField($('#loops'), () => xp.loops, v => xp.loops = v, 1, 64, 'Loops');
 function enableFourTimesExport() {
   if (state.os !== 4) { state.os = 4; $('#os')._upd?.(); sync(); }
@@ -3986,7 +4004,8 @@ function captureSession() {
     state: Object.assign(Object.fromEntries(SESSION_GLOBALS.map(k => [k, state[k]])), {tracks: copyJSON(state.tracks)}),
     controls: {wild, density, selectedTrack: sel},
     evolution: {speed: evolutionSpeed, multiplier: evolutionMultiplier,
-      mode: devolving ? 'devolve' : evolving ? 'evolve' : 'off', time: trailTime, trail: copyJSON(evolutionTrail)},
+      mode: devolving ? 'devolve' : evolving ? 'evolve' : 'off', time: trailTime, trail: copyJSON(evolutionTrail),
+      tracks: copyJSON(trackEvolution)},
     randomPing: randomPing ? {mode: randomPing.mode, next: randomPing.next, baseline: copyJSON(randomPing.baseline)} : null,
     wav: {...xp}
   };
@@ -4049,6 +4068,13 @@ function validateSession(file) {
   if (!Array.isArray(e.trail) || e.trail.length > 8000) fail();
   const evolution = {speed: number(e.speed, 0, 100), multiplier: choice(e.multiplier, [1, 10]),
     mode: choice(e.mode, ['off', 'evolve', 'devolve']), time: number(e.time, 0, Number.MAX_SAFE_INTEGER), trail: []};
+  evolution.tracks = e.tracks === undefined ? Array.from({length: 8}, newTrackEvolution) : array(e.tracks, 8).map(value => {
+    const v = object(value), active = bool(v.active), hold = bool(v.hold);
+    const specs = fieldSpecs.slice(0, fieldSpecs.length / 8);
+    const baseline = v.baseline === null ? null : array(v.baseline, specs.length).map((n, i) => number(n, specs[i].min, specs[i].max));
+    if ((active || hold) && !baseline || active && hold) fail();
+    return {active, hold, baseline};
+  });
   let lastTime = -1;
   evolution.trail = e.trail.map(point => {
     object(point); const t = number(point.t, 0, Number.MAX_SAFE_INTEGER);
@@ -4094,6 +4120,7 @@ function restoreSession(saved) {
   Object.assign(xp, saved.wav);
   evolutionSpeed = saved.evolution.speed; evolutionMultiplier = saved.evolution.multiplier;
   evolutionTrail = saved.evolution.trail; trailTime = saved.evolution.time; trailSample = 0;
+  trackEvolution = saved.evolution.tracks;
   evolving = saved.evolution.mode === 'evolve'; devolving = saved.evolution.mode === 'devolve';
   fieldCache = fieldRefs = null;
   randomPing = saved.randomPing ? Object.assign({id: ++randomPingCounter}, saved.randomPing) : null;
