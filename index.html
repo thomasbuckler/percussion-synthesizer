@@ -159,9 +159,9 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 
 <section class="bar">
   <div class="grp"><span class="cap">Randomize</span></div>
-  <div class="grp"><div class="seg"><button id="rndSounds">Sounds</button><button id="rndSoundsPing" class="random-pp" type="button" aria-label="Sounds undo ping-pong" aria-pressed="false"></button><button type="button" data-random-mode="sounds" data-random-measures="1" aria-label="Sounds: alternate every 1 measure">1</button><button type="button" data-random-mode="sounds" data-random-measures="2" aria-label="Sounds: alternate every 2 measures">2</button><button type="button" data-random-mode="sounds" data-random-measures="3" aria-label="Sounds: alternate every 3 measures">3</button><button type="button" data-random-mode="sounds" data-random-measures="4" aria-label="Sounds: alternate every 4 measures">4</button></div><div id="kWild" class="knob"></div></div>
-  <div class="grp"><div class="seg"><button id="rndBeats">Beats</button><button id="rndBeatsPing" class="random-pp" type="button" aria-label="Beats undo ping-pong" aria-pressed="false"></button><button type="button" data-random-mode="beats" data-random-measures="1" aria-label="Beats: alternate every 1 measure">1</button><button type="button" data-random-mode="beats" data-random-measures="2" aria-label="Beats: alternate every 2 measures">2</button><button type="button" data-random-mode="beats" data-random-measures="3" aria-label="Beats: alternate every 3 measures">3</button><button type="button" data-random-mode="beats" data-random-measures="4" aria-label="Beats: alternate every 4 measures">4</button></div><div id="kDens" class="knob"></div></div>
-  <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="rndBothPing" class="random-pp" type="button" aria-label="Sounds and beats undo ping-pong" aria-pressed="false"></button><button type="button" data-random-mode="both" data-random-measures="1" aria-label="Both: alternate every 1 measure">1</button><button type="button" data-random-mode="both" data-random-measures="2" aria-label="Both: alternate every 2 measures">2</button><button type="button" data-random-mode="both" data-random-measures="3" aria-label="Both: alternate every 3 measures">3</button><button type="button" data-random-mode="both" data-random-measures="4" aria-label="Both: alternate every 4 measures">4</button></div></div>
+  <div class="grp"><div class="seg"><button id="rndSounds">Sounds</button><button id="rndSoundsPing" class="random-pp" type="button" aria-label="Sounds undo ping-pong" aria-pressed="false"></button><button id="rndSoundsRecycle" class="random-pp" type="button" aria-label="Sounds recycle" aria-pressed="false"></button><button type="button" data-random-mode="sounds" data-random-measures="1" aria-label="Sounds: randomization interval 1 measure">1</button><button type="button" data-random-mode="sounds" data-random-measures="2" aria-label="Sounds: randomization interval 2 measures">2</button><button type="button" data-random-mode="sounds" data-random-measures="3" aria-label="Sounds: randomization interval 3 measures">3</button><button type="button" data-random-mode="sounds" data-random-measures="4" aria-label="Sounds: randomization interval 4 measures">4</button></div><div id="kWild" class="knob"></div></div>
+  <div class="grp"><div class="seg"><button id="rndBeats">Beats</button><button id="rndBeatsPing" class="random-pp" type="button" aria-label="Beats undo ping-pong" aria-pressed="false"></button><button id="rndBeatsRecycle" class="random-pp" type="button" aria-label="Beats recycle" aria-pressed="false"></button><button type="button" data-random-mode="beats" data-random-measures="1" aria-label="Beats: randomization interval 1 measure">1</button><button type="button" data-random-mode="beats" data-random-measures="2" aria-label="Beats: randomization interval 2 measures">2</button><button type="button" data-random-mode="beats" data-random-measures="3" aria-label="Beats: randomization interval 3 measures">3</button><button type="button" data-random-mode="beats" data-random-measures="4" aria-label="Beats: randomization interval 4 measures">4</button></div><div id="kDens" class="knob"></div></div>
+  <div class="grp"><div class="seg"><button id="rndBoth">Both</button><button id="rndBothPing" class="random-pp" type="button" aria-label="Sounds and beats undo ping-pong" aria-pressed="false"></button><button id="rndBothRecycle" class="random-pp" type="button" aria-label="Sounds and beats recycle" aria-pressed="false"></button><button type="button" data-random-mode="both" data-random-measures="1" aria-label="Both: randomization interval 1 measure">1</button><button type="button" data-random-mode="both" data-random-measures="2" aria-label="Both: randomization interval 2 measures">2</button><button type="button" data-random-mode="both" data-random-measures="3" aria-label="Both: randomization interval 3 measures">3</button><button type="button" data-random-mode="both" data-random-measures="4" aria-label="Both: randomization interval 4 measures">4</button></div></div>
   <div class="grp"><button id="undo">Undo</button></div>
   <div class="grp"><div id="kShortenDelay" class="knob" title="Shorten every instrument's decay tail, including during evolution. 1x is full length; 0.1x is one tenth. Double-click to reset."></div><div class="seg"><button id="delayAutoReturn" class="delay-auto" type="button" aria-pressed="false" title="Return Decay to 1x after releasing the knob or after the 0.1x glide completes.">AUTO RETURN</button><button id="delayToMinimum" class="delay-auto" type="button" title="Glide Decay to 0.1x just after this pattern ends. With Auto return on, glide back to 1x over the following pattern." aria-label="Reduce Decay to 0.1 times just after this pattern ends">0.1&#x00D7;</button></div></div>
   <div class="grp"><div class="seg"><button id="evolve" aria-pressed="false">Evolution</button><button id="evolveFast" aria-pressed="false" aria-label="10 times evolution and devolution speed" title="Run evolution and devolution at ten times the Speed dial's rate.">10&#x00D7;</button></div><div id="kEvolve" class="knob" title="Linear evolution and devolution speed: 50% runs at half the rate of 100%; 0% pauses sound changes."></div><div class="seg" id="evolutionLoop" role="group" aria-label="Automatic devolution"><button id="devolve" aria-pressed="false" disabled>Devolution</button><button id="evolutionPing" class="random-pp" type="button" aria-label="Evolution and devolution ping-pong" aria-pressed="false"></button><button type="button" data-evolution-measures="1" aria-label="1 measure before devolution">1</button><button type="button" data-evolution-measures="2" aria-label="2 measures before devolution">2</button><button type="button" data-evolution-measures="3" aria-label="3 measures before devolution">3</button><button type="button" data-evolution-measures="4" aria-label="4 measures before devolution">4</button></div></div>
@@ -174,7 +174,7 @@ button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 <section id="seq" tabindex="0" role="region" aria-label="Step sequencer">
   <div class="seqcontent">
   <div class="seqtop">
-    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="randomPingPause" class="random-pp" type="button" aria-label="Hold randomization ping-pong during divisors" aria-pressed="false"></button><button id="clear">Clear</button><button id="patternShift" class="random-pp" type="button" aria-label="Automatically shift patterns up one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 11.5V0.5M3.5 4L7 0.5L10.5 4"/></svg></button><button id="patternShiftDown" class="random-pp" type="button" aria-label="Automatically shift patterns down one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 0.5V11.5M3.5 8L7 11.5L10.5 8"/></svg></button><button id="stepRotateLeft" class="random-pp timed" type="button" aria-label="Shift all patterns one step left"></button><button id="stepRotateRight" class="random-pp timed" type="button" aria-label="Shift all patterns one step right"></button><button type="button" data-shift-measures="1" aria-label="Shift patterns every 1 measure">1</button><button type="button" data-shift-measures="2" aria-label="Shift patterns every 2 measures">2</button><button type="button" data-shift-measures="3" aria-label="Shift patterns every 3 measures">3</button><button type="button" data-shift-measures="4" aria-label="Shift patterns every 4 measures">4</button></div></div>
+    <div class="grp"><span class="cap">STEPS</span><span class="num" id="lenAll"></span><div class="seg" id="lengthDivide"></div><div class="seg"><button id="autoReturn" class="on" aria-pressed="true">ESC</button><button id="randomPingPause" class="random-pp" type="button" aria-label="Hold randomization loops during divisors" aria-pressed="false"></button><button id="clear">Clear</button><button id="patternShift" class="random-pp" type="button" aria-label="Automatically shift patterns up one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 11.5V0.5M3.5 4L7 0.5L10.5 4"/></svg></button><button id="patternShiftDown" class="random-pp" type="button" aria-label="Automatically shift patterns down one track" aria-pressed="false"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1"><path d="M7 0.5V11.5M3.5 8L7 11.5L10.5 8"/></svg></button><button id="stepRotateLeft" class="random-pp timed" type="button" aria-label="Shift all patterns one step left"></button><button id="stepRotateRight" class="random-pp timed" type="button" aria-label="Shift all patterns one step right"></button><button type="button" data-shift-measures="1" aria-label="Shift patterns every 1 measure">1</button><button type="button" data-shift-measures="2" aria-label="Shift patterns every 2 measures">2</button><button type="button" data-shift-measures="3" aria-label="Shift patterns every 3 measures">3</button><button type="button" data-shift-measures="4" aria-label="Shift patterns every 4 measures">4</button></div></div>
   </div>
   <div class="rows" id="rows"></div>
   </div>
@@ -878,8 +878,9 @@ class FM8 extends AudioWorkletProcessor {
       if (d.mode !== 'sounds' && d.mode !== 'beats' && d.mode !== 'both') this.randomPing = null;
       else {
         this.pend = null; this.undoPending = null;
-        this.randomPing = {id:d.id,mode:d.mode,next:d.next === 'undo' && d.baseline ? 'undo' : 'new',tracks:d.tracks || null,baseline:d.baseline || null,boundary:this.playing ? null : 0,
-          measures:[1,2,3,4].includes(d.measures) ? d.measures : 1,remaining:1};
+        const recycle = d.recycle === true, measures = [1,2,3,4].includes(d.measures) ? d.measures : 1;
+        this.randomPing = {id:d.id,mode:d.mode,recycle,next:!recycle && d.next === 'undo' && d.baseline ? 'undo' : 'new',tracks:d.tracks || null,baseline:recycle ? null : d.baseline || null,boundary:this.playing ? null : 0,
+          measures,remaining:recycle ? measures : 1};
         // If armed exactly on a just-played boundary, wait for the next full measure.
         if (this.playing && this.transportBoundary !== null && Math.abs(this.pos-this.ev(this.transportBoundary)) <= 1e-9) this.randomPing.boundary = this.transportBoundary;
       }
@@ -1623,13 +1624,13 @@ class FM8 extends AudioWorkletProcessor {
       // Random choices are prepared off the audio thread; capture the actual pre-change values here.
       if (!p.tracks) return;
       tracks = p.tracks; p.tracks = null;
-      p.baseline = this.st.tracks.map((tr,t) => {
+      p.baseline = p.recycle ? null : this.st.tracks.map((tr,t) => {
         if (!tracks[t]) return null;
         const original = {};
         for (const key of Object.keys(tracks[t])) original[key] = tr[key];
         return copyJSON(original);
       });
-      p.next = 'undo';
+      p.next = p.recycle ? 'new' : 'undo';
     } else {
       tracks = p.baseline; p.next = 'new';
     }
@@ -3453,39 +3454,45 @@ function makeBeats(roles, tracks = state.tracks) {
 // Each mode has its own scoped restore patch; the regular Undo history stays independent.
 let randomPing = null, randomPingCounter = 0, randomPingMinimumId = 0;
 const RANDOM_PING_BUTTONS = { sounds: '#rndSoundsPing', beats: '#rndBeatsPing', both: '#rndBothPing' };
+const RANDOM_RECYCLE_BUTTONS = { sounds: '#rndSoundsRecycle', beats: '#rndBeatsRecycle', both: '#rndBothRecycle' };
+const RECYCLE_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="display:block" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4A8 8 0 0 1 20 12M17.5 9.5L20 12L22.5 9.5"/><path d="M12 4A8 8 0 0 1 20 12M17.5 9.5L20 12L22.5 9.5" transform="rotate(120 12 12)"/><path d="M12 4A8 8 0 0 1 20 12M17.5 9.5L20 12L22.5 9.5" transform="rotate(240 12 12)"/></svg>';
 const RANDOM_PING_MEASURES = { sounds: 'randomSoundsMeasures', beats: 'randomBeatsMeasures', both: 'randomBothMeasures' };
 function paintRandomPing() {
   const hold = !!state.randomPingDivisorHold, paused = hold && (state.lengthDivisor || 1) > 1;
   for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
-    const b = $(id), on = randomPing?.mode === mode;
+    const b = $(id), on = randomPing?.mode === mode && !randomPing.recycle;
     b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
     const name = mode === 'both' ? 'Sounds and beats' : mode === 'sounds' ? 'Sounds' : 'Beats';
     const measures = state[RANDOM_PING_MEASURES[mode]];
     b.title = name + ': alternate a fresh randomization and undo every ' + measures + ' measure' + (measures === 1 ? '' : 's') + '. One mode at a time; switch off to keep the current result.' +
       (on ? (paused ? ' Held during the divisor. Next at full length: ' : ' Next: ') + (randomPing.next === 'undo' ? 'undo.' : 'new variation.') : ' Starts at the next measure while playing.');
+    const r = $(RANDOM_RECYCLE_BUTTONS[mode]), recycling = randomPing?.mode === mode && !!randomPing.recycle;
+    r.classList.toggle('on', recycling); r.setAttribute('aria-pressed', recycling);
+    r.title = name + ': generate fresh content every ' + measures + ' measure' + (measures === 1 ? '' : 's') + ', without undo. One mode at a time; switch off to keep the current result.' +
+      (recycling && paused ? ' Held during the divisor.' : ' The first change also waits for the selected number of measure boundaries.');
   }
   for (const b of document.querySelectorAll('[data-random-measures]')) {
     const measures = +b.dataset.randomMeasures, mode = b.dataset.randomMode;
     const on = state[RANDOM_PING_MEASURES[mode]] === measures;
     b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
-    b.title = 'Alternate new and undo every ' + measures + ' measure' + (measures === 1 ? '' : 's') + '. Changing this starts a new interval.';
+    b.title = 'Randomization interval: ' + measures + ' measure' + (measures === 1 ? '' : 's') + ' for ping-pong or recycle. Changing this starts a new interval.';
   }
   const pause = $('#randomPingPause');
   pause.classList.toggle('on', hold); pause.setAttribute('aria-pressed', hold);
-  pause.title = 'When enabled, hold Sounds, Beats, and Both ping-pong only while a divisor is active; resume automatically when full length returns. Playback and Flip keep running.' +
-    (hold ? (paused ? ' Currently holding during the divisor.' : ' Enabled; ping-pong continues at full length.') : ' Off.');
+  pause.title = 'When enabled, hold Sounds, Beats, and Both ping-pong or recycle only while a divisor is active; resume automatically when full length returns. Playback and Flip keep running.' +
+    (hold ? (paused ? ' Currently holding during the divisor.' : ' Enabled; randomization continues at full length.') : ' Off.');
 }
 function makeRandomPingTracks() {
   if (!randomPing) return null;
   const tracks = copyJSON(state.tracks);
   // Prepare every new variation from the pre-change sound, even while the variation is audible.
-  if (randomPing.next === 'undo' && randomPing.baseline) randomPing.baseline.forEach((p, t) => Object.assign(tracks[t], p));
+  if (!randomPing.recycle && randomPing.next === 'undo' && randomPing.baseline) randomPing.baseline.forEach((p, t) => Object.assign(tracks[t], p));
   const sounds = randomPing.mode === 'beats' ? null : makeSounds(tracks);
   const beats = randomPing.mode === 'sounds' ? null : makeBeats(sounds && sounds.map(p => p.role), tracks);
   return tracks.map((_, t) => Object.assign({}, sounds ? sounds[t] : {}, beats ? { steps: beats[t] } : {}));
 }
 function sendRandomPing() {
-  if (node && randomPing) node.port.postMessage({ type: 'randomPing', id: randomPing.id, mode: randomPing.mode, measures: state[RANDOM_PING_MEASURES[randomPing.mode]], next: randomPing.next, baseline: randomPing.baseline, tracks: makeRandomPingTracks() });
+  if (node && randomPing) node.port.postMessage({ type: 'randomPing', id: randomPing.id, mode: randomPing.mode, recycle: !!randomPing.recycle, measures: state[RANDOM_PING_MEASURES[randomPing.mode]], next: randomPing.next, baseline: randomPing.baseline, tracks: makeRandomPingTracks() });
 }
 function refreshRandomPing() {
   if (node && randomPing) node.port.postMessage({ type: 'randomPingNext', id: randomPing.id, tracks: makeRandomPingTracks() });
@@ -3496,14 +3503,14 @@ function stopRandomPing() {
   if (node) node.port.postMessage({ type: 'randomPing', id, mode: null });
   paintRandomPing();
 }
-function toggleRandomPing(mode) {
-  const wasOn = randomPing?.mode === mode;
+function toggleRandomPing(mode, recycle = false) {
+  const wasOn = randomPing?.mode === mode && !!randomPing.recycle === recycle;
   stopRandomPing();
   if (wasOn) return;
   clearPend();
   pendingUndo = null; if (node) node.port.postMessage({ type: 'undoPending', value: null });
   pushUndo(); paintUndo();
-  randomPing = { id: ++randomPingCounter, mode, next: 'new', baseline: null };
+  randomPing = { id: ++randomPingCounter, mode, recycle, next: 'new', baseline: null };
   if (node) node.port.postMessage({ type: 'state', state });
   sendRandomPing(); paintRandomPing();
 }
@@ -3517,7 +3524,8 @@ function landRandomPing(d) {
   const apply = () => applyRandomTracks(d);
   if (d.mode === 'beats') apply(); else changeRandomSounds(apply);
   if (randomPing?.id === d.id) {
-    randomPing.baseline = d.baseline; randomPing.next = d.phase === 'new' ? 'undo' : 'new';
+    randomPing.baseline = randomPing.recycle ? null : d.baseline;
+    randomPing.next = randomPing.recycle || d.phase === 'undo' ? 'new' : 'undo';
     refreshRandomPing(); paintRandomPing();
   }
   renderSeq(); if (d.mode !== 'beats') renderEditor(); saveLocal();
@@ -3526,6 +3534,8 @@ function landRandomPing(d) {
 for (const [mode, id] of Object.entries(RANDOM_PING_BUTTONS)) {
   $(id).innerHTML = PP_ICON;
   $(id).onclick = () => toggleRandomPing(mode);
+  const r = $(RANDOM_RECYCLE_BUTTONS[mode]); r.innerHTML = RECYCLE_ICON;
+  r.onclick = () => toggleRandomPing(mode, true);
 }
 for (const b of document.querySelectorAll('[data-random-measures]')) b.onclick = () => {
   const mode = b.dataset.randomMode, measures = +b.dataset.randomMeasures, key = RANDOM_PING_MEASURES[mode];
@@ -4006,7 +4016,7 @@ function captureSession() {
     evolution: {speed: evolutionSpeed, multiplier: evolutionMultiplier,
       mode: devolving ? 'devolve' : evolving ? 'evolve' : 'off', time: trailTime, trail: copyJSON(evolutionTrail),
       tracks: copyJSON(trackEvolution)},
-    randomPing: randomPing ? {mode: randomPing.mode, next: randomPing.next, baseline: copyJSON(randomPing.baseline)} : null,
+    randomPing: randomPing ? {mode: randomPing.mode, recycle: !!randomPing.recycle, next: randomPing.next, baseline: copyJSON(randomPing.baseline)} : null,
     wav: {...xp}
   };
 }
@@ -4087,7 +4097,8 @@ function validateSession(file) {
   let ping = null;
   if (file.randomPing !== null) {
     const p = object(file.randomPing);
-    ping = {mode: choice(p.mode, ['sounds', 'beats', 'both']), next: choice(p.next, ['new', 'undo']), baseline: null};
+    ping = {mode: choice(p.mode, ['sounds', 'beats', 'both']), recycle: p.recycle === undefined ? false : bool(p.recycle), next: choice(p.next, ['new', 'undo']), baseline: null};
+    if (ping.recycle && (ping.next !== 'new' || p.baseline !== null)) fail();
     if (p.baseline !== null) {
       const allowed = Object.keys(st.tracks[0]).filter(k => ping.mode === 'beats' ? k === 'steps' :
         !TRACK_KEEP.includes(k) || (ping.mode === 'both' && k === 'steps'));
