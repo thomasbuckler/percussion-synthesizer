@@ -1249,22 +1249,19 @@ class FM8 extends AudioWorkletProcessor {
     return ref;
   }
   queueDivisorPhase(k, value) {
-    const old=this.st.lengthDivisor||1;
-    if (value===old) return;
-    const source=this.snapshotTransport(), expand=value===1;
-    if (expand) {
-      // Resume from what each row actually played, not a hidden full-length clock.
-      source.lastIndices=Array.from({length:8},(_,t)=>{
-        const tr=source.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
-        return this.thas[t] && this.tlastLen[t]===tr.len && this.tlastDivisor[t]===old
-          ? this.tlastI[t] : (point.motion<0 ? Math.ceil : Math.floor)(point.index/old)*old;
-      });
-    } else source.advancePlayback(k);
-    this.divisorPhase={k,value,source,expand};
+    if (value===(this.st.lengthDivisor||1)) return;
+    if (value===1) {
+      // Full-length return begins a new measure, not the next cell of the short loop.
+      this.divisorPhase={k,restart:true};
+      return;
+    }
+    const source=this.snapshotTransport();
+    source.advancePlayback(k);
+    this.divisorPhase={k,source};
   }
   applyDivisorPhase(k) {
     const pending=this.divisorPhase;
-    if (!pending || pending.k!==k) return;
+    if (!pending || pending.k!==k || pending.restart) return;
     this.divisorPhase=null;
     const source=pending.source, divisor=this.st.lengthDivisor||1;
     const dir=source.st.bpm<0 ? -1 : 1;
@@ -1273,45 +1270,27 @@ class FM8 extends AudioWorkletProcessor {
       this.port.postMessage({type:'flipped',flips:this.flips,bpm:this.st.bpm,
         armed:this.flipArm,armId:this.flipArmId});
     }
-    if (pending.expand) {
-      const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
-      const old=source.st.lengthDivisor||1, tail=source.st.divisorTail, high=Math.max(0,Math.ceil(cycle)-1);
-      const last=Math.max(0,Math.min(Math.ceil(cycle/old)-1,(dir<0 ? Math.ceil : Math.floor)(source.playTick/old)));
-      // Seed the last visible global cell, then let ordinary full-size stepping
-      // choose its neighbour. Only an original endpoint can reverse the clock.
-      this.playTick=on ? Math.max(0,Math.min(high,stepOffset(cycle,old,tail)+last)) : 0;
-      for (let t=0;t<8;t++) {
-        const tr=this.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
-        const last=Math.max(0,Math.min((tr.len|0)-1,stepOffset(tr.len,old,tail)+source.lastIndices[t]/old));
-        const period=2*Math.max(0,(tr.len|0)-1);
-        this.tk0[t]=this.playTick;
-        this.ti0[t]=tr.pp && point.reflected && period>0 ? period-last : last;
-      }
-      this.playTickStarted=true; this.playbackReset=false;
-      this.bounceMode=on; this.bounceCycle=cycle; this.bounceDivisor=1; this.bounceHigh=high;
-    } else {
-      const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
-      const high=Math.max(0,(Math.ceil(cycle/divisor)-1)*divisor);
-      const quantize=motion=>motion<0 ? Math.floor : Math.ceil;
-      const raw=divisorPosition(((source.playTick%cycle)+cycle)%cycle,cycle,source.st,this.st);
-      // Snap ahead in the outgoing direction; nearest rounding can replay the
-      // endpoint that just finished, especially step 1 when entering /3 or /4.
-      this.playTick=on ? Math.max(0,Math.min(high,quantize(dir)(raw/divisor)*divisor)) : 0;
-      for (let t=0;t<8;t++) {
-        const tr=this.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
-        const maximum=Math.max(0,(Math.ceil((tr.len|0)/divisor)-1)*divisor);
-        const period=maximum ? maximum+(tr.len|0)-divisor : 0;
-        // A reversed row must use the same transport window, mirrored, or its
-        // anchor wraps at a different point from the global bounce.
-        const mirror=this.tdir[t]<0 && (on || source.st.divisorTail || this.st.divisorTail);
-        const position=divisorPosition(mirror ? source.trackEndpoint(tr)-point.index : point.index,tr.len,source.st,this.st);
-        let mapped=Math.max(0,Math.min(maximum,quantize(mirror ? -point.motion : point.motion)(position/divisor)*divisor));
-        if(mirror)mapped=maximum-mapped;
-        this.tk0[t]=this.playTick;
-        this.ti0[t]=tr.pp && point.reflected && period>0 && mapped<maximum ? period-mapped : mapped;
-      }
-      this.playTickStarted=true; this.playbackReset=false;
+    const cycle=this.patternCycle(), on=!!this.st.transportPingPong;
+    const high=Math.max(0,(Math.ceil(cycle/divisor)-1)*divisor);
+    const quantize=motion=>motion<0 ? Math.floor : Math.ceil;
+    const raw=divisorPosition(((source.playTick%cycle)+cycle)%cycle,cycle,source.st,this.st);
+    // Snap ahead in the outgoing direction; nearest rounding can replay the
+    // endpoint that just finished, especially step 1 when entering /3 or /4.
+    this.playTick=on ? Math.max(0,Math.min(high,quantize(dir)(raw/divisor)*divisor)) : 0;
+    for (let t=0;t<8;t++) {
+      const tr=this.st.tracks[t], point=source.traversalPoint(t,source.thas[t],source.traversalScratch);
+      const maximum=Math.max(0,(Math.ceil((tr.len|0)/divisor)-1)*divisor);
+      const period=maximum ? maximum+(tr.len|0)-divisor : 0;
+      // A reversed row must use the same transport window, mirrored, or its
+      // anchor wraps at a different point from the global bounce.
+      const mirror=this.tdir[t]<0 && (on || source.st.divisorTail || this.st.divisorTail);
+      const position=divisorPosition(mirror ? source.trackEndpoint(tr)-point.index : point.index,tr.len,source.st,this.st);
+      let mapped=Math.max(0,Math.min(maximum,quantize(mirror ? -point.motion : point.motion)(position/divisor)*divisor));
+      if(mirror)mapped=maximum-mapped;
+      this.tk0[t]=this.playTick;
+      this.ti0[t]=tr.pp && point.reflected && period>0 && mapped<maximum ? period-mapped : mapped;
     }
+    this.playTickStarted=true; this.playbackReset=false;
     this.thas.fill(0);
   }
   beatAt(k) { return this.gridBeat + (k-this.gridTick)/(this.st.lengthDivisor||1); }
@@ -1371,8 +1350,9 @@ class FM8 extends AudioWorkletProcessor {
     return Math.max(0,(Math.ceil((tr.len|0)/d)-1)*d);
   }
   advancePlayback(k) {
-    // Expand before stepping so temporary endpoints cannot cause a phantom turn.
-    if (this.divisorPhase?.k===k && this.divisorPhase.expand) this.applyDivisorPhase(k);
+    // A divisor return uses the fresh-traversal path: no extra step or endpoint turn.
+    const restart=this.divisorPhase?.k===k && this.divisorPhase.restart;
+    if (restart) this.divisorPhase=null;
     const st=this.st, on=!!st.transportPingPong, cycle=this.patternCycle(), divisor=st.lengthDivisor||1;
     const originalDir=st.bpm<0 ? -1 : 1;
     let dir=originalDir;
@@ -1396,8 +1376,9 @@ class FM8 extends AudioWorkletProcessor {
       this.playTick=on && dir<0 ? this.bounceHigh : 0;
       for(let t=0;t<8;t++) {
         this.tk0[t]=this.playTick;
-        // Match Play's phase: steady BPM reverse crosses step zero at the boundary.
-        const reverseStart=on && dir<0 ? this.tdir[t]>0 : this.tdir[t]<0;
+        // Divisor escape starts each row at its full endpoint in the live direction.
+        // Other resets retain Play's steady-reverse phase.
+        const reverseStart=(on || restart) && dir<0 ? this.tdir[t]>0 : this.tdir[t]<0;
         this.ti0[t]=reverseStart ? this.trackEndpoint(st.tracks[t],on) : 0;
         this.thas[t]=0;
       }
